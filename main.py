@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 import logging
-from aiogram import Bot, Dispatcher, types
 from datetime import datetime
+
+from aiogram import Bot, Dispatcher, types
+from aiogram import executor
 
 # 🔐 ТВОЙ ТОКЕН БОТА
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== СПИСОК МАРКЕТОВ =====
@@ -254,12 +256,12 @@ MARKETS = [
 # Сколько маркетов показывать на одной "странице" меню
 PAGE_SIZE = 10
 
-# user_id -> название маркета (какой маркет выбрал пользователь)
-user_market = {}
-
 # название маркета -> отчитался (True/False) за сегодня
 daily_reports = {}
 current_date = None
+
+# user_id -> состояние ввода (ожидаем выбор маркета/шаблон)
+pending_reports = {}  # {user_id: {"step": "choose_market"/"fill_template", "date": date, "market": str}}
 
 
 def reset_reports():
@@ -313,52 +315,19 @@ def make_markets_keyboard(page: int = 0) -> types.InlineKeyboardMarkup:
 
 @dp.message_handler(commands=["start", "help"])
 async def cmd_start(message: types.Message):
-    """Старт: предлагаем выбрать маркет, если ещё не выбран."""
-    user_id = message.from_user.id
-
-    if user_id in user_market:
-        await message.reply(
-            f"Привет! Ты уже привязан к маркета: {user_market[user_id]}\n"
-            "Можешь отправлять ежедневные фото в рабочую группу.\n\n"
-            "Команды:\n"
-            "/status – статус отчётов\n"
-            "/reset – обнулить отчёты (для админов)"
-        )
-    else:
-        await message.reply(
-            "Привет! Сначала выбери свой маркет из списка ниже:",
-            reply_markup=make_markets_keyboard(page=0),
-        )
-
-
-# Переключение страниц в меню маркетов
-@dp.callback_query_handler(lambda c: c.data.startswith("page:"))
-async def process_page_callback(callback_query: types.CallbackQuery):
-    page = int(callback_query.data.split(":", 1)[1])
-    await callback_query.message.edit_reply_markup(
-        make_markets_keyboard(page=page)
+    text = (
+        "Привет! Я бот для фото-отчётов по магазинам.\n\n"
+        "Как это работает:\n"
+        "1️⃣ Отправляешь фото в рабочую группу.\n"
+        "2️⃣ Бот попросит выбрать магазин из списка.\n"
+        "3️⃣ Бот пришлёт шаблон:\n"
+        "<code>#Магазин:\nОстатки:\nХлеб:\nЛепешки:\nПатыр:\nАссортимент:</code>\n"
+        "4️⃣ Заполняешь числа и отправляешь одним сообщением.\n\n"
+        "Команды:\n"
+        "/status – кто уже отправил отчёт за сегодня\n"
+        "/reset – обнулить отчёты (для админа)"
     )
-    await callback_query.answer()
-
-
-# Выбор конкретного маркета
-@dp.callback_query_handler(lambda c: c.data.startswith("market:"))
-async def process_market_callback(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    market_name = callback_query.data.split(":", 1)[1]
-
-    user_market[user_id] = market_name
-
-    # На всякий случай добавляем маркет в ежедневный список,
-    # если когда-нибудь список MARKETS поменяется
-    if market_name not in daily_reports:
-        daily_reports[market_name] = False
-
-    await callback_query.message.edit_text(
-        f"Маркет выбран: {market_name}.\n"
-        "Теперь отправляйте ежедневные фото в рабочую группу."
-    )
-    await callback_query.answer("Маркет сохранён!")
+    await message.reply(text)
 
 
 @dp.message_handler(commands=["reset"])
@@ -370,7 +339,7 @@ async def cmd_reset(message: types.Message):
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
-    """Показать, какие маркеты уже отправили фото, а какие нет."""
+    """Показать, какие маркеты уже отправили отчёт, а какие нет."""
     global current_date
     today = datetime.now().date()
     if current_date != today:
@@ -385,25 +354,27 @@ async def cmd_status(message: types.Message):
         else:
             not_done.append(f"❌ {name}")
 
-    text = "Статус отчётов на сегодня:\n\n"
+    text = f"Статус отчётов на сегодня ({today}):\n\n"
     if done:
-        text += "Отправили фото:\n" + "\n".join(done) + "\n\n"
+        text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
     else:
-        text += "Пока никто не отправил фото.\n\n"
+        text += "Пока никто не отправил отчёт.\n\n"
 
     if not_done:
         text += "Ещё НЕ отправили:\n" + "\n".join(not_done)
     else:
-        text += "Все маркеты отправили фото. 👍"
+        text += "Все маркеты отправили отчёт. 👍"
 
     await message.answer(text)
 
 
+# === 1. ПОЛУЧАЕМ ФОТО И ЗАПУСКАЕМ ВЫБОР МАРКЕТА ===
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
     """
-    Любое фото – попытка отчёта маркета.
-    Пользователь должен заранее выбрать свой маркет через /start.
+    Любое фото – запуск отчёта:
+    1) Сохраняем состояние "ожидаем выбор маркета".
+    2) Показываем список маркетов.
     """
     global current_date
     today = datetime.now().date()
@@ -412,20 +383,98 @@ async def handle_photo(message: types.Message):
 
     user_id = message.from_user.id
 
-    if user_id not in user_market:
-        await message.reply(
-            "Ты ещё не выбрал свой маркет. Нажми /start и выбери его из списка."
-        )
-        return
-
-    market_name = user_market[user_id]
-    daily_reports[market_name] = True
+    pending_reports[user_id] = {
+        "step": "choose_market",
+        "date": today,
+        "market": None,
+    }
 
     await message.reply(
-        f"Фото принято. {market_name} отмечен как отправивший ✅"
+        "Выберите ваш магазин из списка ниже:",
+        reply_markup=make_markets_keyboard(page=0),
     )
 
 
+# === 2. СМЕНА СТРАНИЦЫ В СПИСКЕ МАРКЕТОВ ===
+@dp.callback_query_handler(lambda c: c.data.startswith("page:"))
+async def process_page_callback(callback_query: types.CallbackQuery):
+    page = int(callback_query.data.split(":", 1)[1])
+    await callback_query.message.edit_reply_markup(
+        make_markets_keyboard(page=page)
+    )
+    await callback_query.answer()
+
+
+# === 3. ВЫБОР КОНКРЕТНОГО МАРКЕТА ===
+@dp.callback_query_handler(lambda c: c.data.startswith("market:"))
+async def process_market_callback(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    data = pending_reports.get(user_id)
+
+    # Если отчёта для этого пользователя нет – игнорируем
+    if not data or data.get("step") != "choose_market":
+        await callback_query.answer("Нет активного отчёта. Отправь фото ещё раз.")
+        return
+
+    market_name = callback_query.data.split(":", 1)[1]
+    data["market"] = market_name
+    data["step"] = "fill_template"
+
+    # На всякий случай добавим маркет в словарь отчётов, если его там нет
+    if market_name not in daily_reports:
+        daily_reports[market_name] = False
+
+    template_text = (
+        f"#Магазин: {market_name}\n"
+        f"Остатки: \n"
+        f"Хлеб: \n"
+        f"Лепешки: \n"
+        f"Патыр: \n"
+        f"Ассортимент: "
+    )
+
+    await callback_query.message.reply(
+        "Теперь заполни шаблон, указав количество штук по каждому пункту "
+        "и отправь СЛЕДУЮЩИМ сообщением:",
+    )
+    await callback_query.message.reply(f"<code>{template_text}</code>")
+
+    await callback_query.answer("Маркет выбран!")
+
+
+# === 4. ПОЛУЧАЕМ ЗАПОЛНЕННЫЙ ШАБЛОН ===
+@dp.message_handler(content_types=types.ContentType.TEXT)
+async def handle_template_text(message: types.Message):
+    user_id = message.from_user.id
+    data = pending_reports.get(user_id)
+
+    # Если нет активного шага "заполни шаблон" – просто игнорируем текст
+    if not data or data.get("step") != "fill_template":
+        return
+
+    # Можно добавить простую проверку, что текст похож на нужный шаблон
+    # но жёстко не будем валидировать, чтобы не мешать людям.
+    market_name = data.get("market")
+    report_date = data.get("date")
+    today = datetime.now().date()
+
+    # Если дата сменилась – считаем, что отчёт просрочен
+    if report_date != today:
+        pending_reports.pop(user_id, None)
+        await message.reply("День уже сменился, отправь, пожалуйста, новый отчёт с фото.")
+        return
+
+    # Отмечаем маркет как отчитавшийся
+    daily_reports[market_name] = True
+
+    # Можно сохранить сам текст отчёта в лог / БД (здесь просто логируем)
+    logging.info(f"Отчёт {market_name} от {user_id}: {message.text}")
+
+    # Очищаем состояние
+    pending_reports.pop(user_id, None)
+
+    await message.reply(f"Отчёт для <b>{market_name}</b> сохранён ✅ Спасибо!")
+
+
 if __name__ == "__main__":
-    from aiogram import executor
     executor.start_polling(dp, skip_updates=True)
