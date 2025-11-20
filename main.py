@@ -14,7 +14,7 @@ API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
 # пример: -1001234567890
-TARGET_GROUP_ID = -1001234567890  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+TARGET_GROUP_ID = -1003247828545  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,7 +22,7 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (username без @) =====
-ADMIN_USERNAMES = {"yusubovk"}
+ADMIN_USERNAMES = {"yusubovk", "DSharafeev_TVD"}
 
 
 def is_admin(user: types.User) -> bool:
