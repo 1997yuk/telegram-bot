@@ -14,7 +14,8 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 URL твоего WebApp на GitHub Pages
-WEBAPP_URL = "https://1997yuk.github.io/telegram-bot/index.html"  # ← ЗАМЕНИ на свой URL
+# ОБЯЗАТЕЛЬНО замени на свой реальный адрес!
+WEBAPP_URL = "https://<username>.github.io/<repo>/index.html"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -93,6 +94,7 @@ def reset_reports():
     global daily_reports, current_date
     current_date = datetime.now().date()
     daily_reports = {name: False for name in MARKETS}
+    logging.info("Сброшены ежедневные отчёты")
 
 
 def check_date_and_reset():
@@ -126,6 +128,7 @@ cur.execute(
     """
 )
 conn.commit()
+logging.info("База данных и таблица reports готовы")
 
 
 def save_report(user: types.User, market: str, photo_file_id: str,
@@ -154,6 +157,7 @@ def save_report(user: types.User, market: str, photo_file_id: str,
         ),
     )
     conn.commit()
+    logging.info(f"Сохранён отчёт: {market}, user_id={user.id}")
 
 
 # ===== СОСТОЯНИЕ ПО ПОЛЬЗОВАТЕЛЯМ (фото + чат группы) =====
@@ -373,8 +377,8 @@ async def handle_photo(message: types.Message):
     )
 
 
-# ⚠️ ВАЖНО: для aiogram 2.25 используем строку "web_app_data"!
-@dp.message_handler(content_types="web_app_data")
+# ⚠️ ВАЖНО: ловим web_app_data через фильтр, а не content_types
+@dp.message_handler(lambda m: m.web_app_data is not None)
 async def handle_web_app_data(message: types.Message):
     """
     Приходит после отправки формы из WebApp.
@@ -419,6 +423,7 @@ async def handle_web_app_data(message: types.Message):
 
     check_date_and_reset()
     daily_reports[market] = True
+    logging.info(f"Отчёт принят для {market}, daily_reports[{market}] = True")
 
     save_report(
         user=message.from_user,
@@ -448,4 +453,5 @@ async def handle_web_app_data(message: types.Message):
 
 
 if __name__ == "__main__":
+    logging.info("Бот запускается...")
     executor.start_polling(dp, skip_updates=True)
