@@ -487,8 +487,8 @@ async def cmd_export(message: types.Message):
     writer = csv.writer(output, delimiter=';')
     writer.writerow([
         "id", "created_at", "market",
-        "bread", "lepeshki", "patyr", "assortment",
-        "user_id", "username", "full_name",
+    "Буханку", "лепешки", "патир", "ассортимент",
+    "user_id", "username", "full_name",
     ])
     for r in rows:
         writer.writerow(r)
