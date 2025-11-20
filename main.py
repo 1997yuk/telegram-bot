@@ -4,21 +4,13 @@ from datetime import datetime
 import sqlite3
 import io
 import csv
-import json
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # 🔐 ТОКЕН ТВОЕГО БОТА
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
-
-# 🔗 URL твоего WebApp на GitHub Pages
-WEBAPP_URL = "https://1997yuk.github.io/telegram-bot/index.html"  # TODO: ЗАМЕНИ
-
-# 🔗 ID группы, куда бот будет выкладывать итоговый отчёт
-# Например: TARGET_GROUP_ID = -1001234567890
-TARGET_GROUP_ID = -1003247828545  # TODO: ЗАМЕНИ на реальный chat_id группы
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,7 +18,7 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (по username без @) =====
-ADMIN_USERNAMES = {"yusubovk"}  # добавляй ники через запятую
+ADMIN_USERNAMES = {"yusubovk"}  # добавляешь ники через запятую
 
 
 def is_admin(user: types.User) -> bool:
@@ -158,7 +150,7 @@ MARKETS_TEXT = """
 Маркет М-146
 Маркет М-147
 Маркет М-148
-Маркет M-149
+Маркет М-149
 Маркет М-151
 Маркет М-156
 Маркет М-16
@@ -288,10 +280,10 @@ cur.execute(
         username TEXT,
         full_name TEXT,
         market TEXT,
-        bread INTEGER,
-        lepeshki INTEGER,
-        patyr INTEGER,
-        assortment INTEGER,
+        bread TEXT,
+        lepeshki TEXT,
+        patyr TEXT,
+        assortment TEXT,
         raw_text TEXT,
         photo_file_id TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -303,7 +295,7 @@ logging.info("База данных и таблица reports готовы")
 
 
 def save_report(user: types.User, market: str, photo_file_id: str,
-                bread: int, lepeshki: int, patyr: int, assortment: int,
+                bread: str, lepeshki: str, patyr: str, assortment: str,
                 raw_text: str):
     cur = conn.cursor()
     cur.execute(
@@ -331,8 +323,23 @@ def save_report(user: types.User, market: str, photo_file_id: str,
     logging.info(f"Сохранён отчёт: {market}, user_id={user.id}")
 
 
-# user_id -> {"photo_file_id"}
-pending_reports = {}
+# ===== СОСТОЯНИЕ ПО ПОЛЬЗОВАТЕЛЮ =====
+# user_id -> dict(step, chat_id, photo_file_id, market, ostatki, bread, lepeshki, patyr, assortment)
+user_states = {}
+
+
+# ===== ВСПОМОГАТЕЛЬНЫЕ КЛАВИАТУРЫ =====
+
+def kb_ostatki():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.row(KeyboardButton("корректные"), KeyboardButton("некорректные"))
+    return kb
+
+
+def kb_level():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.row(KeyboardButton("мало"), KeyboardButton("норм"), KeyboardButton("много"))
+    return kb
 
 
 # ===== КОМАНДЫ =====
@@ -341,16 +348,17 @@ pending_reports = {}
 async def cmd_start(message: types.Message):
     text = (
         "Привет! Я бот для фото-отчётов по магазинам.\n\n"
-        "Схема работы:\n"
-        "1️⃣ Отправь <b>фото</b> в ЛИЧКУ боту.\n"
-        "2️⃣ Я отвечу кнопкой «Заполнить отчёт».\n"
-        "3️⃣ В WebApp выбери магазин и введи:\n"
-        "   • Буханка\n"
-        "   • Лепешки\n"
-        "   • Патыр\n"
-        "   • Ассортимент\n"
-        "4️⃣ Я сохраню данные и выложу итоговый отчёт с фото в рабочую группу.\n\n"
-        "Команды (можно в личке):\n"
+        "Как работать:\n"
+        "1️⃣ Отправьте <b>фото</b> в группу или в личку боту.\n"
+        "2️⃣ После фото я по шагам спрошу:\n"
+        "   • Маркет\n"
+        "   • Остатки: корректные / некорректные\n"
+        "   • Хлеб: мало / норм / много\n"
+        "   • Лепешки: мало / норм / много\n"
+        "   • Патыр: мало / норм / много\n"
+        "   • Ассортимент: мало / норм / много\n"
+        "3️⃣ В конце я отправлю итоговый отчёт с фото и сохраню его в базе.\n\n"
+        "Команды (в личке или в группе):\n"
         "/status – кто уже отправил отчёт за сегодня\n"
         "/reset  – удалить отчёты за сегодня (админ)\n"
         "/export – выгрузить все отчёты в CSV (админ)\n"
@@ -526,120 +534,191 @@ async def cmd_photos_today(message: types.Message):
             logging.error(f"Ошибка отправки фото: {e}")
 
 
-# ===== ОСНОВНОЙ ПРОЦЕСС: ФОТО В ЛИЧКЕ + WEBAPP =====
+# ===== ОСНОВНОЙ ПРОЦЕСС: ФОТО + ОПРОС В ТГ =====
 
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
     """
-    Магазины шлют фото в ЛИЧКУ боту.
+    Магазин присылает фото (в группу или в личку).
+    Запускаем диалог по шагам.
     """
     user_id = message.from_user.id
+    chat_id = message.chat.id
     photo = message.photo[-1]
     file_id = photo.file_id
 
-    logging.info(f"[PHOTO] user_id={user_id}, chat_id={message.chat.id}, file_id={file_id}")
+    logging.info(f"[PHOTO] user_id={user_id}, chat_id={chat_id}, file_id={file_id}")
 
-    pending_reports[user_id] = {
+    user_states[user_id] = {
+        "step": "market",
+        "chat_id": chat_id,
         "photo_file_id": file_id,
+        "market": None,
+        "ostatki": None,
+        "bread": None,
+        "lepeshki": None,
+        "patyr": None,
+        "assortment": None,
     }
 
-    kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton(
-            text="Заполнить отчёт",
-            web_app=WebAppInfo(url=WEBAPP_URL),
-        )
-    )
-
     await message.reply(
-        "Фото получено ✅\nНажмите «Заполнить отчёт» и внесите остатки.",
-        reply_markup=kb,
+        "Фото получено ✅\n"
+        "Напишите название маркета, например: <b>Маркет М-11</b>\n"
+        "Название должно быть строго как в списке.",
+        reply_markup=types.ReplyKeyboardRemove()
     )
 
 
-@dp.message_handler(lambda m: m.web_app_data is not None)
-async def handle_web_app_data(message: types.Message):
-    """
-    Приходит после отправки формы из WebApp.
-    """
+@dp.message_handler(lambda m: m.text is not None and m.from_user.id in user_states)
+async def handle_steps(message: types.Message):
     user_id = message.from_user.id
-    logging.info(f"[WEB_APP_DATA] от user_id={user_id}: {message.web_app_data}")
+    text = message.text.strip()
+    state = user_states[user_id]
+    step = state["step"]
+    chat_id = state["chat_id"]
 
-    state = pending_reports.get(user_id)
-    if not state:
-        await message.reply("Не найдено связанное фото. Отправьте фото ещё раз.")
+    # ===== ВЫБОР МАРКЕТА =====
+    if step == "market":
+        if text not in MARKETS:
+            await message.reply(
+                "Такого маркета нет в списке.\n"
+                "Напишите точно как в примере, например: <b>Маркет М-11</b>."
+            )
+            return
+        state["market"] = text
+        state["step"] = "ostatki"
+        await message.reply(
+            "Остатки: выберите <b>корректные</b> или <b>некорректные</b>.",
+            reply_markup=kb_ostatki()
+        )
         return
 
-    # 🔍 DEBUG: показать сырые данные, которые пришли из WebApp
-    try:
-        raw_json = message.web_app_data.data
-    except Exception as e:
-        logging.error(f"Нет web_app_data.data: {e}")
-        await message.reply("Ошибка: не удалось прочитать данные WebApp.")
+    # ===== ОСТАТКИ =====
+    if step == "ostatki":
+        if text not in ["корректные", "некорректные"]:
+            await message.reply(
+                "Выберите один из вариантов: <b>корректные</b> / <b>некорректные</b>.",
+                reply_markup=kb_ostatki()
+            )
+            return
+        state["ostatki"] = text
+        state["step"] = "bread"
+        await message.reply(
+            "Хлеб: <b>мало</b> / <b>норм</b> / <b>много</b>",
+            reply_markup=kb_level()
+        )
         return
 
-    # Показываем их тебе в чате, чтобы было видно, что вообще пришло
-    await message.reply(f"DEBUG WebApp данные:\n<code>{raw_json}</code>")
-
-    # Пытаемся распарсить JSON
-    try:
-        data = json.loads(raw_json)
-    except Exception as e:
-        logging.error(f"Ошибка парсинга WebApp data: {e}")
-        await message.reply("Ошибка обработки данных (JSON). Попробуйте ещё раз.")
+    # ===== ХЛЕБ =====
+    if step == "bread":
+        if text not in ["мало", "норм", "много"]:
+            await message.reply(
+                "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>",
+                reply_markup=kb_level()
+            )
+            return
+        state["bread"] = text
+        state["step"] = "lepeshki"
+        await message.reply(
+            "Лепешки: <b>мало</b> / <b>норм</b> / <b>много</b>",
+            reply_markup=kb_level()
+        )
         return
 
-    market = data.get("market")
-    bread = int(data.get("bread", 0) or 0)
-    lepeshki = int(data.get("lepeshki", 0) or 0)
-    patyr = int(data.get("patyr", 0) or 0)
-    assortment = int(data.get("assortment", 0) or 0)
-
-    if market not in MARKETS:
-        await message.reply(f"Неверный маркет в отчёте: {market!r}. Попробуйте ещё раз.")
+    # ===== ЛЕПЕШКИ =====
+    if step == "lepeshki":
+        if text not in ["мало", "норм", "много"]:
+            await message.reply(
+                "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>",
+                reply_markup=kb_level()
+            )
+            return
+        state["lepeshki"] = text
+        state["step"] = "patyr"
+        await message.reply(
+            "Патыр: <b>мало</b> / <b>норм</b> / <b>много</b>",
+            reply_markup=kb_level()
+        )
         return
 
-    photo_file_id = state["photo_file_id"]
+    # ===== ПАТЫР =====
+    if step == "patyr":
+        if text not in ["мало", "норм", "много"]:
+            await message.reply(
+                "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>",
+                reply_markup=kb_level()
+            )
+            return
+        state["patyr"] = text
+        state["step"] = "assortment"
+        await message.reply(
+            "Ассортимент: <b>мало</b> / <b>норм</b> / <b>много</b>",
+            reply_markup=kb_level()
+        )
+        return
 
-    raw_text = (
-        f"#Магазин: {market}\n"
-        f"Хлеб: {bread}\n"
-        f"Лепешки: {lepeshki}\n"
-        f"Патыр: {patyr}\n"
-        f"Ассортимент: {assortment}"
-    )
+    # ===== АССОРТИМЕНТ (ФИНАЛ) =====
+    if step == "assortment":
+        if text not in ["мало", "норм", "много"]:
+            await message.reply(
+                "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>",
+                reply_markup=kb_level()
+            )
+            return
+        state["assortment"] = text
 
-    # Сохраняем в БД
-    save_report(
-        user=message.from_user,
-        market=market,
-        photo_file_id=photo_file_id,
-        bread=bread,
-        lepeshki=lepeshki,
-        patyr=patyr,
-        assortment=assortment,
-        raw_text=raw_text,
-    )
+        market = state["market"]
+        ostatki = state["ostatki"]
+        bread = state["bread"]
+        lepeshki = state["lepeshki"]
+        patyr = state["patyr"]
+        assortment = state["assortment"]
+        photo_file_id = state["photo_file_id"]
 
-    # Чистим временное состояние
-    pending_reports.pop(user_id, None)
+        raw_text = (
+            f"#Магазин: {market}\n"
+            f"Остатки: {ostatki}\n"
+            f"Хлеб: {bread}\n"
+            f"Лепешки: {lepeshki}\n"
+            f"Патыр: {patyr}\n"
+            f"Ассортимент: {assortment}"
+        )
 
-    # Итоговый отчёт в рабочую группу
-    if TARGET_GROUP_ID:
+        # Сохраняем в БД
+        save_report(
+            user=message.from_user,
+            market=market,
+            photo_file_id=photo_file_id,
+            bread=bread,
+            lepeshki=lepeshki,
+            patyr=patyr,
+            assortment=assortment,
+            raw_text=raw_text,
+        )
+
+        # Удаляем состояние
+        user_states.pop(user_id, None)
+
+        # Убираем клавиатуру
+        rm = types.ReplyKeyboardRemove()
+
+        # Итоговый отчёт в тот же чат (группа или личка)
         try:
             await bot.send_photo(
-                TARGET_GROUP_ID,
+                chat_id,
                 photo_file_id,
                 caption=raw_text,
+                reply_markup=rm
             )
         except Exception as e:
-            logging.error(f"Ошибка отправки фото в группу {TARGET_GROUP_ID}: {e}")
+            logging.error(f"Ошибка отправки фото в чат {chat_id}: {e}")
+            await message.reply(raw_text, reply_markup=rm)
 
-    # Подтверждение пользователю
-    await message.reply("Отчёт сохранён в базе и отправлен в рабочую группу ✅")
+        await message.reply("Отчёт сохранён и отправлен ✅", reply_markup=rm)
+        return
 
 
-
-# Просто логируем любой текст, чтобы видеть, что бот жив
+# Логируем остальные тексты, чтобы видеть активность
 @dp.message_handler(content_types=types.ContentType.TEXT)
 async def debug_text(message: types.Message):
     logging.info(f"[TEXT] user_id={message.from_user.id}, chat_id={message.chat.id}, text={message.text}")
