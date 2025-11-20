@@ -16,7 +16,7 @@ API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 URL твоего WebApp на GitHub Pages
 # ОБЯЗАТЕЛЬНО замени на свой реальный адрес!
-WEBAPP_URL = "https://<username>.github.io/<repo>/index.html"
+WEBAPP_URL = "https://1997yuk.github.io/telegram-bot/index.html"
 
 logging.basicConfig(level=logging.INFO)
 
