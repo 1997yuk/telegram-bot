@@ -13,8 +13,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
-# пример: -1001234567890
-TARGET_GROUP_ID = -1003247828545  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+TARGET_GROUP_ID = -1003203445630  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,7 +21,7 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (username без @) =====
-ADMIN_USERNAMES = {"yusubovk"}
+ADMIN_USERNAMES = {"yusubovk", "DSharafeev_TVD"}
 
 
 def is_admin(user: types.User) -> bool:
@@ -63,6 +62,7 @@ DB_PATH = "reports.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
+# таблица отчётов
 cur.execute(
     """
     CREATE TABLE IF NOT EXISTS reports (
@@ -85,7 +85,18 @@ cur.execute(
 )
 conn.commit()
 
-# Добавляем поля, если таблица была старой
+# таблица языков пользователей
+cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS user_lang (
+        user_id INTEGER PRIMARY KEY,
+        lang TEXT
+    )
+    """
+)
+conn.commit()
+
+# Добавляем поля, если таблица reports была старой
 cur.execute("PRAGMA table_info(reports)")
 cols = [row[1] for row in cur.fetchall()]
 if "ostatki" not in cols:
@@ -97,7 +108,40 @@ if "incoming" not in cols:
     conn.commit()
     logging.info("Добавлена колонка incoming в таблицу reports")
 
-logging.info("База данных и таблица reports готовы")
+logging.info("База данных и таблицы готовы")
+
+# ===== КЭШ ЯЗЫКА В ПАМЯТИ =====
+USER_LANG = {}  # user_id -> 'ru' / 'uz'
+
+
+def set_lang(user_id: int, lang: str):
+    """Сохранить язык в памяти и в БД."""
+    if lang not in ("ru", "uz"):
+        lang = "ru"
+    USER_LANG[user_id] = lang
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO user_lang (user_id, lang)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET lang = excluded.lang
+        """,
+        (user_id, lang),
+    )
+    conn.commit()
+
+
+def get_lang(user_id: int) -> str:
+    """Получить язык пользователя (сначала из памяти, потом из БД)."""
+    if user_id in USER_LANG:
+        return USER_LANG[user_id]
+    c = conn.cursor()
+    c.execute("SELECT lang FROM user_lang WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    if row and row[0] in ("ru", "uz"):
+        USER_LANG[user_id] = row[0]
+        return row[0]
+    return "ru"
 
 
 def save_report(
@@ -138,14 +182,6 @@ def save_report(
     )
     conn.commit()
     logging.info(f"Сохранён отчёт: {market}, user_id={user.id}")
-
-
-# ===== ЯЗЫК ПОЛЬЗОВАТЕЛЯ =====
-USER_LANG = {}  # user_id -> 'ru' / 'uz'
-
-
-def get_lang(user_id: int) -> str:
-    return USER_LANG.get(user_id, "ru")
 
 
 # ===== СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ =====
@@ -220,13 +256,13 @@ async def cmd_start(message: types.Message):
 async def set_language(message: types.Message):
     user_id = message.from_user.id
     if message.text == "O‘zbekcha 🇺🇿":
-        USER_LANG[user_id] = "uz"
+        set_lang(user_id, "uz")
         text = (
             "Til o'rnatildi: O‘zbekcha 🇺🇿\n\n"
             "Endi vitrina fotosini shu chatga yuboring."
         )
     else:
-        USER_LANG[user_id] = "ru"
+        set_lang(user_id, "ru")
         text = (
             "Язык установлен: русский 🇷🇺\n\n"
             "Теперь отправьте фото витрины в этот чат."
@@ -427,7 +463,7 @@ async def handle_photo(message: types.Message):
     file_id = photo.file_id
     lang = get_lang(user_id)
 
-    logging.info(f"[PHOTO] user_id={user_id}, private chat, file_id={file_id}")
+    logging.info(f"[PHOTO] user_id={user_id}, private chat, file_id={file_id}, lang={lang}")
 
     user_states[user_id] = {
         "step": "market_group",
@@ -736,6 +772,6 @@ async def debug_text(message: types.Message):
 
 if __name__ == "__main__":
     logging.info(
-        "Бот запускается (SQLite, RU/UZ, ограниченный список маркетов, отчёт в группе только на русском)..."
+        "Бот запускается (SQLite, RU/UZ, язык сохраняется в БД, ограниченный список маркетов)..."
     )
     executor.start_polling(dp, skip_updates=True)
