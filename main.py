@@ -505,28 +505,73 @@ async def cmd_photos_today(message: types.Message):
         await message.reply("У вас нет прав для этой команды.")
         return
 
+    # аргумент команды после /photos_today
+    # пример: "/photos_today Маркет М-11"
+    args = message.get_args().strip()
+    market_filter = None
+
+    if args:
+        # если написали "все" или "all" — показываем все маркеты
+        if args.lower() in ("все", "all"):
+            market_filter = None
+        else:
+            # проверяем, что маркет существует в нашем списке
+            if args not in MARKETS:
+                await message.reply(
+                    "Не нашёл такой маркет.\n"
+                    "Напишите точно как в списке, например:\n"
+                    "<code>/photos_today Маркет М-11</code>\n"
+                    "или\n"
+                    "<code>/photos_today все</code>",
+                )
+                return
+            market_filter = args  # конкретный маркет
+
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT market, photo_file_id, created_at
+
+    base_sql = """
+        SELECT
+            market,
+            photo_file_id,
+            datetime(created_at, '+5 hours') AS created_at_uz
         FROM reports
-        WHERE date(created_at, 'localtime') = date('now','localtime')
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
           AND photo_file_id IS NOT NULL
-        ORDER BY datetime(created_at) ASC
-        """
-    )
+    """
+
+    params = []
+    if market_filter:
+        base_sql += " AND market = ?"
+        params.append(market_filter)
+
+    base_sql += " ORDER BY datetime(created_at) ASC"
+
+    cur.execute(base_sql, params)
     rows = cur.fetchall()
+
     if not rows:
-        await message.reply("За сегодня ещё нет фото-отчётов.")
+        if market_filter:
+            await message.reply(f"За сегодня нет фото-отчётов по {market_filter}.")
+        else:
+            await message.reply("За сегодня ещё нет фото-отчётов.")
         return
 
-    await message.reply(f"Фото-отчёты за сегодня: {len(rows)} шт.")
-    for market, file_id, created_at in rows:
-        caption = f"{market}\n{created_at}"
+    if market_filter:
+        await message.reply(
+            f"Фото-отчёты за сегодня по {market_filter}: {len(rows)} шт."
+        )
+    else:
+        await message.reply(
+            f"Фото-отчёты за сегодня по всем маркетам: {len(rows)} шт."
+        )
+
+    for market, file_id, created_at_uz in rows:
+        caption = f"{market}\n{created_at_uz}"
         try:
             await message.reply_photo(file_id, caption=caption)
         except Exception as e:
             logging.error(f"Ошибка отправки фото {file_id}: {e}")
+
 
 # ==== ОСНОВНОЙ ПРОЦЕСС ОТЧЁТА ====
 
