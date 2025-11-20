@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 import logging
-from datetime import datetime
 import sqlite3
 import io
 import csv
+from collections import defaultdict
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
@@ -12,13 +12,17 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 # 🔐 ТОКЕН ТВОЕГО БОТА
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
+# 🔗 ID ГРУППЫ, КУДА ОТПРАВЛЯЕМ ИТОГОВЫЙ ОТЧЁТ
+# пример: TARGET_GROUP_ID = -1003247828545
+TARGET_GROUP_ID = -1003247828545  # <<< ОБЯЗАТЕЛЬНО ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (по username без @) =====
-ADMIN_USERNAMES = {"yusubovk", "DSharafeev_TVD"}  # добавляешь ники через запятую
+ADMIN_USERNAMES = {"yusubovk", "DSharafeev_TVD"}  # добавляй ники через запятую
 
 
 def is_admin(user: types.User) -> bool:
@@ -267,13 +271,11 @@ MARKETS_TEXT = """
 
 MARKETS = [line.strip() for line in MARKETS_TEXT.splitlines() if line.strip()]
 
-# ===== ГРУППИРОВКА МАРКЕТОВ ПО БУКВЕ/КОДУ =====
-from collections import defaultdict
-
+# ===== ГРУППИРОВКА МАРКЕТОВ ПО КОДУ (B, D, Dz, K, А, М, С, S...) =====
 MARKET_GROUPS = defaultdict(list)
 for m in MARKETS:
-    code = m.replace("Маркет", "").strip()  # "B-01", "Dz-01", "А-01"
-    prefix = code.split('-')[0].strip()     # "B", "Dz", "А"
+    code = m.replace("Маркет", "").strip()   # "B-01", "Dz-01", "А-01"
+    prefix = code.split('-')[0].strip()      # "B", "Dz", "А"
     MARKET_GROUPS[prefix].append(m)
 
 MARKET_GROUP_CODES = sorted(MARKET_GROUPS.keys())
@@ -334,12 +336,11 @@ def save_report(user: types.User, market: str, photo_file_id: str,
     logging.info(f"Сохранён отчёт: {market}, user_id={user.id}")
 
 
-# ===== СОСТОЯНИЕ ПО ПОЛЬЗОВАТЕЛЮ =====
-# user_id -> dict(step, chat_id, photo_file_id, market_group, market, ostatki, bread, lepeshki, patyr, assortment)
+# ===== СОСТОЯНИЕ ПО ПОЛЬЗОВАТЕЛЮ (только ЛИЧКА) =====
+# user_id -> dict(step, photo_file_id, market_group, market, ostatki, bread, lepeshki, patyr, assortment)
 user_states = {}
 
-
-# ===== ВСПОМОГАТЕЛЬНЫЕ КЛАВИАТУРЫ =====
+# ===== КЛАВИАТУРЫ =====
 
 def kb_market_groups():
     kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -379,17 +380,14 @@ def kb_level():
 async def cmd_start(message: types.Message):
     text = (
         "Привет! Я бот для фото-отчётов по магазинам.\n\n"
-        "Как работать:\n"
-        "1️⃣ Отправьте <b>фото</b> в группу или в личку боту.\n"
-        "2️⃣ После фото я спрошу:\n"
+        "📌 Схема работы:\n"
+        "1️⃣ Отправь <b>фото</b> в ЛИЧКУ боту.\n"
+        "2️⃣ Я по шагам спрошу:\n"
         "   • Группу маркета (букву)\n"
-        "   • Конкретный маркет из списка\n"
+        "   • Конкретный маркет\n"
         "   • Остатки: корректные / некорректные\n"
-        "   • Хлеб: мало / норм / много\n"
-        "   • Лепешки: мало / норм / много\n"
-        "   • Патыр: мало / норм / много\n"
-        "   • Ассортимент: мало / норм / много\n"
-        "3️⃣ В конце я отправлю итоговый отчёт с фото и сохраню его в базе.\n\n"
+        "   • Хлеб / Лепешки / Патыр / Ассортимент: мало / норм / много\n"
+        "3️⃣ Я сохраню отчёт в базе и отправлю итог с фото в рабочую группу.\n\n"
         "Команды (в личке или в группе):\n"
         "/status – кто уже отправил отчёт за сегодня\n"
         "/reset  – удалить отчёты за сегодня (админ)\n"
@@ -566,24 +564,29 @@ async def cmd_photos_today(message: types.Message):
             logging.error(f"Ошибка отправки фото: {e}")
 
 
-# ===== ОСНОВНОЙ ПРОЦЕСС: ФОТО + ОПРОС В ТГ =====
+# ===== ОСНОВНОЙ ПРОЦЕСС: ФОТО ТОЛЬКО В ЛИЧКЕ =====
 
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
     """
-    Магазин присылает фото (в группу или в личку).
-    Запускаем диалог по шагам.
+    Фото обрабатываем ТОЛЬКО в личке.
+    Если фото пришло в группу — просим отправить в личку.
     """
+    if message.chat.type != "private":
+        await message.reply(
+            "Пожалуйста, отправьте фото отчёта в ЛИЧКУ боту. "
+            "В группе будут только готовые отчёты."
+        )
+        return
+
     user_id = message.from_user.id
-    chat_id = message.chat.id
     photo = message.photo[-1]
     file_id = photo.file_id
 
-    logging.info(f"[PHOTO] user_id={user_id}, chat_id={chat_id}, file_id={file_id}")
+    logging.info(f"[PHOTO] user_id={user_id}, private chat, file_id={file_id}")
 
     user_states[user_id] = {
         "step": "market_group",
-        "chat_id": chat_id,
         "photo_file_id": file_id,
         "market_group": None,
         "market": None,
@@ -601,13 +604,14 @@ async def handle_photo(message: types.Message):
     )
 
 
-@dp.message_handler(lambda m: m.text is not None and m.from_user.id in user_states)
+# ===== ОБРАБОТКА ШАГОВ В ЛИЧКЕ =====
+
+@dp.message_handler(lambda m: m.chat.type == "private" and m.text is not None and m.from_user.id in user_states)
 async def handle_steps(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
     state = user_states[user_id]
     step = state["step"]
-    chat_id = state["chat_id"]
 
     # ===== ВЫБОР ГРУППЫ МАРКЕТА =====
     if step == "market_group":
@@ -647,7 +651,7 @@ async def handle_steps(message: types.Message):
     if step == "ostatki":
         if text not in ["корректные", "некорректные"]:
             await message.reply(
-                "Выберите один из вариантов: <b>корректные</b> / <b>некорректные</b>.",
+                "Выберите: <b>корректные</b> / <b>некорректные</b>.",
                 reply_markup=kb_ostatki()
             )
             return
@@ -749,29 +753,28 @@ async def handle_steps(message: types.Message):
         # Удаляем состояние
         user_states.pop(user_id, None)
 
-        # Убираем клавиатуру
         rm = types.ReplyKeyboardRemove()
 
-        # Итоговый отчёт в тот же чат (группа или личка)
-        try:
-            await bot.send_photo(
-                chat_id,
-                photo_file_id,
-                caption=raw_text,
-                reply_markup=rm
-            )
-        except Exception as e:
-            logging.error(f"Ошибка отправки фото в чат {chat_id}: {e}")
-            await message.reply(raw_text, reply_markup=rm)
+        # Итоговый отчёт отправляем В ГРУППУ
+        if TARGET_GROUP_ID:
+            try:
+                await bot.send_photo(
+                    TARGET_GROUP_ID,
+                    photo_file_id,
+                    caption=raw_text,
+                )
+            except Exception as e:
+                logging.error(f"Ошибка отправки фото в группу {TARGET_GROUP_ID}: {e}")
 
-        await message.reply("Отчёт сохранён и отправлен ✅", reply_markup=rm)
+        # И подтверждаем пользователю в личке
+        await message.reply("Отчёт сохранён и отправлен в рабочую группу ✅", reply_markup=rm)
         return
 
 
-# Логируем остальные тексты, чтобы видеть активность
+# Логируем остальные тексты (но не мешаем диалогу)
 @dp.message_handler(content_types=types.ContentType.TEXT)
 async def debug_text(message: types.Message):
-    logging.info(f"[TEXT] user_id={message.from_user.id}, chat_id={message.chat.id}, text={message.text}")
+    logging.info(f"[TEXT] user_id={message.from_user.id}, chat_type={message.chat.type}, text={message.text}")
 
 
 if __name__ == "__main__":
