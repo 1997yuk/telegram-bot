@@ -14,8 +14,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 URL твоего WebApp на GitHub Pages
-# ОБЯЗАТЕЛЬНО замени на свой реальный адрес!
-WEBAPP_URL = "https://<username>.github.io/<repo>/index.html"
+WEBAPP_URL = "https://1997yuk.github.io/telegram-bot/index.html"  # замени на свой URL
 
 logging.basicConfig(level=logging.INFO)
 
@@ -23,14 +22,14 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (по username без @) =====
-ADMIN_USERNAMES = {"yusubovk"}  # сюда добавляешь ещё ники при необходимости
+ADMIN_USERNAMES = {"yusubovk"}
 
 
 def is_admin(user: types.User) -> bool:
     return bool(user.username and user.username.lower() in ADMIN_USERNAMES)
 
 
-# ===== СПИСОК МАРКЕТОВ =====
+# ===== СПИСОК МАРКЕТОВ (как раньше) =====
 MARKETS = [
     "Маркет B-01", "Маркет B-02", "Маркет B-03", "Маркет B-04", "Маркет B-05",
     "Маркет B-06", "Маркет B-07", "Маркет B-08", "Маркет B-09",
@@ -85,7 +84,7 @@ MARKETS = [
     "Маркет D-15", "Маркет D-17"
 ]
 
-# ===== ЕЖЕДНЕВНЫЙ СТАТУС =====
+# ===== ЕЖЕДНЕВНЫЙ СТАТУС (для /status) =====
 daily_reports = {name: False for name in MARKETS}
 current_date = datetime.now().date()
 
@@ -105,7 +104,6 @@ def check_date_and_reset():
 
 
 # ===== БАЗА ДАННЫХ (SQLite) =====
-
 DB_PATH = "reports.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
@@ -128,7 +126,7 @@ cur.execute(
     """
 )
 conn.commit()
-logging.info("База данных и таблица reports готовы")
+logging.info("База данных готова")
 
 
 def save_report(user: types.User, market: str, photo_file_id: str,
@@ -169,49 +167,15 @@ pending_reports = {}
 
 @dp.message_handler(commands=["start", "help"])
 async def cmd_start(message: types.Message):
-    text = (
-        "Привет! Я бот для фото-отчётов по магазинам.\n\n"
-        "Как работать:\n"
-        "1️⃣ В группе отправь фото отчёта.\n"
-        "2️⃣ Под фото появится кнопка «Заполнить отчёт».\n"
-        "3️⃣ Откроется форма, выбери магазин и введи:\n"
-        "   • Буханка\n"
-        "   • Лепешки\n"
-        "   • Патыр\n"
-        "   • Ассортимент\n"
-        "4️⃣ После отправки формы я сохраню отчёт и выложу итог в группу.\n\n"
-        "Команды:\n"
-        "/status – кто уже отправил отчёт за сегодня\n"
-        "/reset  – обнулить отчёты (для админов)\n"
-        "/export – выгрузить все отчёты в CSV (админ)\n"
-        "/photos_today – фото отчётов за сегодня (админ)\n"
-        "   • /photos_today – все маркеты\n"
-        "   • /photos_today Маркет М-11 – только один маркет"
-    )
-    await message.reply(text)
-
-
-@dp.message_handler(commands=["reset"])
-async def cmd_reset(message: types.Message):
-    if not is_admin(message.from_user):
-        await message.reply("У вас нет прав для этой команды.")
-        return
-    reset_reports()
-    await message.answer("Отчёты обнулены на сегодня. Жду фото от всех маркетов.")
+    logging.info(f"/start от user_id={message.from_user.id} в чате {message.chat.id}")
+    await message.reply("Бот запущен. Отправьте фото в группу или сюда для теста.")
 
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
     check_date_and_reset()
-
-    done = []
-    not_done = []
-
-    for name in MARKETS:
-        if daily_reports.get(name):
-            done.append(f"✅ {name}")
-        else:
-            not_done.append(f"❌ {name}")
+    done = [f"✅ {m}" for m in MARKETS if daily_reports.get(m)]
+    not_done = [f"❌ {m}" for m in MARKETS if not daily_reports.get(m)]
 
     today = datetime.now().date()
     text = f"Статус отчётов на сегодня ({today}):\n\n"
@@ -219,178 +183,48 @@ async def cmd_status(message: types.Message):
         text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
     else:
         text += "Пока никто не отправил отчёт.\n\n"
-
     if not_done:
         text += "Ещё НЕ отправили:\n" + "\n".join(not_done)
-    else:
-        text += "Все маркеты отправили отчёт. 👍"
-
     await message.answer(text)
 
 
-@dp.message_handler(commands=["export"])
-async def cmd_export(message: types.Message):
-    if not is_admin(message.from_user):
-        await message.reply("У вас нет прав для этой команды.")
-        return
-
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT
-            id,
-            datetime(created_at, '+5 hours') AS created_at_uz,
-            market,
-            bread,
-            lepeshki,
-            patyr,
-            assortment,
-            user_id,
-            username,
-            full_name
-        FROM reports
-        ORDER BY datetime(created_at) ASC
-        """
-    )
-    rows = cur.fetchall()
-    if not rows:
-        await message.reply("В базе пока нет отчётов.")
-        return
-
-    output = io.StringIO()
-    writer = csv.writer(output, delimiter=';')
-    writer.writerow([
-        "id", "created_at", "market",
-        "Буханку", "лепешки", "патир", "ассортимент",
-        "user_id", "username", "full_name",
-    ])
-    for r in rows:
-        writer.writerow(r)
-
-    data = output.getvalue().encode("utf-8-sig")
-    buf = io.BytesIO(data)
-    buf.name = "reports.csv"
-
-    await message.reply_document(buf, caption="Выгрузка всех отчётов из базы.")
-
-
-@dp.message_handler(commands=["photos_today"])
-async def cmd_photos_today(message: types.Message):
-    if not is_admin(message.from_user):
-        await message.reply("У вас нет прав для этой команды.")
-        return
-
-    args = message.get_args().strip()
-    market_filter = None
-
-    if args:
-        if args.lower() in ("все", "all"):
-            market_filter = None
-        else:
-            if args not in MARKETS:
-                await message.reply(
-                    "Не нашёл такой магазин.\n"
-                    "Напишите точно как в списке, например:\n"
-                    "<code>/photos_today Маркет М-11</code>\n"
-                    "или\n"
-                    "<code>/photos_today все</code>",
-                )
-                return
-            market_filter = args
-
-    cur = conn.cursor()
-    base_sql = """
-        SELECT
-            market,
-            photo_file_id,
-            datetime(created_at, '+5 hours') AS created_at_uz
-        FROM reports
-        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
-          AND photo_file_id IS NOT NULL
-    """
-    params = []
-    if market_filter:
-        base_sql += " AND market = ?"
-        params.append(market_filter)
-
-    base_sql += " ORDER BY datetime(created_at) ASC"
-
-    cur.execute(base_sql, params)
-    rows = cur.fetchall()
-
-    if not rows:
-        if market_filter:
-            await message.reply(f"За сегодня нет фото-отчётов по {market_filter}.")
-        else:
-            await message.reply("За сегодня ещё нет фото-отчётов.")
-        return
-
-    if market_filter:
-        await message.reply(
-            f"Фото-отчёты за сегодня по {market_filter}: {len(rows)} шт."
-        )
-    else:
-        await message.reply(
-            f"Фото-отчёты за сегодня по всем маркетам: {len(rows)} шт."
-        )
-
-    for market, file_id, created_at_uz in rows:
-        caption = f"{market}\n{created_at_uz}"
-        try:
-            await message.reply_photo(file_id, caption=caption)
-        except Exception as e:
-            logging.error(f"Ошибка отправки фото {file_id}: {e}")
-
-
-# ===== ОСНОВНОЙ ПРОЦЕСС: ФОТО + WEBAPP =====
+# ===== ПРОСТОЙ ХЕНДЛЕР ФОТО (ДИАГНОСТИЧЕСКИЙ) =====
 
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
-    """
-    Фото приходит в группу.
-    Сохраняем фото и чат, отправляем кнопку WebApp.
-    """
-    check_date_and_reset()
-
     user_id = message.from_user.id
-    group_chat_id = message.chat.id
+    chat_id = message.chat.id
     photo = message.photo[-1]
     file_id = photo.file_id
 
-    logging.info(f"Получено фото от user_id={user_id} в чате {group_chat_id}")
+    logging.info(f"[PHOTO] user_id={user_id}, chat_id={chat_id}, file_id={file_id}")
 
+    # Для WebApp-логики пока только сохраняем состояние
     pending_reports[user_id] = {
-        "group_chat_id": group_chat_id,
+        "group_chat_id": chat_id,
         "photo_file_id": file_id,
     }
 
     kb = InlineKeyboardMarkup().add(
         InlineKeyboardButton(
-            text="Заполнить отчёт",
+            text="Заполнить отчёт (WebApp)",
             web_app=WebAppInfo(url=WEBAPP_URL),
         )
     )
 
-    await message.reply(
-        "Нажмите «Заполнить отчёт», чтобы указать остатки по хлебу.",
-        reply_markup=kb,
-    )
+    await message.reply("Фото получено ✅\nТеперь нажмите кнопку для заполнения отчёта.", reply_markup=kb)
 
 
-# ⚠️ ВАЖНО: ловим web_app_data через фильтр, а не content_types
+# ===== ПРИЁМ ДАННЫХ ИЗ WEBAPP (ЕСЛИ ОНИ ПРИХОДЯТ) =====
+
 @dp.message_handler(lambda m: m.web_app_data is not None)
 async def handle_web_app_data(message: types.Message):
-    """
-    Приходит после отправки формы из WebApp.
-    message.web_app_data.data — строка JSON с market, bread, lepeshki, patyr, assortment.
-    """
     user_id = message.from_user.id
+    logging.info(f"[WEB_APP_DATA] от user_id={user_id}: {message.web_app_data}")
+
     state = pending_reports.get(user_id)
-
-    logging.info(f"Получены web_app_data от user_id={user_id}: {message.web_app_data}")
-
     if not state:
-        await message.reply("Не найдено соответствующее фото. Отправьте фото ещё раз в группу.")
+        await message.reply("Не найдено связанное фото. Отправьте фото ещё раз.")
         return
 
     try:
@@ -410,8 +244,8 @@ async def handle_web_app_data(message: types.Message):
         await message.reply("Неверный маркет в отчёте, попробуйте ещё раз.")
         return
 
-    photo_file_id = state["photo_file_id"]
     group_chat_id = state["group_chat_id"]
+    photo_file_id = state["photo_file_id"]
 
     raw_text = (
         f"#Магазин: {market}\n"
@@ -423,7 +257,6 @@ async def handle_web_app_data(message: types.Message):
 
     check_date_and_reset()
     daily_reports[market] = True
-    logging.info(f"Отчёт принят для {market}, daily_reports[{market}] = True")
 
     save_report(
         user=message.from_user,
@@ -438,18 +271,21 @@ async def handle_web_app_data(message: types.Message):
 
     pending_reports.pop(user_id, None)
 
-    # Итоговый отчёт в группу
+    # Отчёт в тот чат, откуда было фото (группа или личка)
     try:
-        await bot.send_photo(
-            group_chat_id,
-            photo_file_id,
-            caption=raw_text,
-        )
+        await bot.send_photo(group_chat_id, photo_file_id, caption=raw_text)
     except Exception as e:
-        logging.error(f"Ошибка отправки фото в группу: {e}")
+        logging.error(f"Ошибка отправки фото в чат {group_chat_id}: {e}")
 
-    # Подтверждение пользователю / в тот же чат
-    await message.reply("Отчёт сохранён и отправлен в группу ✅")
+    await message.reply("Отчёт сохранён и отправлен ✅")
+
+
+# ===== ПРОСТОЙ ЭХО-ЛОГ ДЛЯ ТЕКСТА (для проверки, что бот видит сообщения) =====
+
+@dp.message_handler(content_types=types.ContentType.TEXT)
+async def debug_text(message: types.Message):
+    logging.info(f"[TEXT] user_id={message.from_user.id}, chat_id={message.chat.id}, text={message.text}")
+    # Ничего не отвечаем, чтобы не спамить, но видно в логах
 
 
 if __name__ == "__main__":
