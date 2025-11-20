@@ -289,6 +289,11 @@ async def cmd_reset(message: types.Message):
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
+    # ✅ только для админов
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
     cur = conn.cursor()
     cur.execute(
         """
@@ -297,6 +302,29 @@ async def cmd_status(message: types.Message):
         WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
         """
     )
+    rows = cur.fetchall()
+    reported = {r[0] for r in rows}
+
+    done = []
+    not_done = []
+
+    for m in MARKETS:
+        if m in reported:
+            done.append(f"✅ {m}")
+        else:
+            not_done.append(f"❌ {m}")
+
+    text = "Статус отчётов на сегодня (UTC+5):\n\n"
+    if done:
+        text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
+    else:
+        text += "Пока никто не отправил отчёт.\n\n"
+
+    if not_done:
+        text += "Ещё НЕ отправили:\n" + "\n".join(not_done)
+
+    await message.answer(text)
+
     rows = cur.fetchall()
     reported = {r[0] for r in rows}
 
