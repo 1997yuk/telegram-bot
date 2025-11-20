@@ -18,7 +18,7 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (по username без @) =====
-ADMIN_USERNAMES = {"yusubovk" , "@as_7z7"}  # сюда можно добавлять ещё ники
+ADMIN_USERNAMES = {"yusubovk"}  # сюда можно добавлять ещё ники
 
 
 def is_admin(user: types.User) -> bool:
@@ -418,9 +418,9 @@ async def cmd_start(message: types.Message):
     text = (
         "Привет! Я бот для фото-отчётов по магазинам.\n\n"
         "Как работать:\n"
-        "1️⃣ Отправь фото в группу.\n"
-        "2️⃣ Я спрошу префикс маркета (B, D, М, С и т.д.).\n"
-        "3️⃣ Потом выберешь точный маркет из списка.\n"
+        "1️⃣ В группе отправь фото отчёта.\n"
+        "2️⃣ Я напишу тебе в личные сообщения (если ты нажал /start в ЛС).\n"
+        "3️⃣ В личке выберешь префикс маркета и сам магазин.\n"
         "4️⃣ Я пришлю шаблон отчёта:\n"
         "<code>#Магазин: ...\n"
         "Хлеб:\n"
@@ -538,7 +538,7 @@ async def cmd_photos_today(message: types.Message):
         else:
             if args not in MARKETS:
                 await message.reply(
-                    "Не нашёл такой маркет.\n"
+                    "Не нашёл такой магазин.\n"
                     "Напишите точно как в списке, например:\n"
                     "<code>/photos_today Маркет М-11</code>\n"
                     "или\n"
@@ -595,6 +595,14 @@ async def cmd_photos_today(message: types.Message):
 
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
+    """
+    Фото может прийти из группы или из лички.
+    Логику делаем такой:
+    - состояние отчёта создаём всегда по user_id;
+    - дальнейшее общение стараемся вести в личке (chat_id = user_id);
+    - если бот не может написать в личку (пользователь не нажал /start),
+      коротко сообщаем об этом в том чате, откуда пришло фото.
+    """
     check_date_and_reset()
 
     user_id = message.from_user.id
@@ -608,10 +616,29 @@ async def handle_photo(message: types.Message):
         "photo_file_id": file_id,
     }
 
-    await message.reply(
-        "Выбери префикс своего маркета (буква/сочетание букв):",
-        reply_markup=prefix_keyboard(),
-    )
+    # Пытаемся продолжить общение в личке
+    try:
+        # сначала отправим фото, чтобы человек видел, какой отчёт заполняет
+        await bot.send_photo(
+            user_id,
+            file_id,
+            caption="Это фото будет прикреплено к вашему отчёту."
+        )
+        await bot.send_message(
+            user_id,
+            "Выбери префикс своего маркета (буква/сочетание букв):",
+            reply_markup=prefix_keyboard(),
+        )
+
+        # Если фото пришло из группы — можно ничего не писать туда
+        # (всё общение пойдёт в личке)
+    except Exception as e:
+        logging.error(f"Не удалось написать пользователю в личку: {e}")
+        # Сообщаем минимально в тот чат, откуда пришло фото
+        await message.reply(
+            "Я не могу написать вам в личные сообщения.\n"
+            "Откройте чат со мной и нажмите /start, затем отправьте фото ещё раз."
+        )
 
 
 @dp.message_handler(content_types=types.ContentType.TEXT)
