@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
 from datetime import datetime
-from collections import defaultdict
 import sqlite3
 import io
 import csv
@@ -15,8 +14,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 URL твоего WebApp на GitHub Pages
-# ОБЯЗАТЕЛЬНО замени на свой реальный адрес!
-WEBAPP_URL = "https://1997yuk.github.io/telegram-bot/index.html"
+WEBAPP_URL = "https://1997yuk.github.io/telegram-bot/index.html"  # ← ЗАМЕНИ на свой URL
 
 logging.basicConfig(level=logging.INFO)
 
@@ -159,7 +157,6 @@ def save_report(user: types.User, market: str, photo_file_id: str,
 
 
 # ===== СОСТОЯНИЕ ПО ПОЛЬЗОВАТЕЛЯМ (фото + чат группы) =====
-
 # user_id -> {"group_chat_id", "photo_file_id"}
 pending_reports = {}
 
@@ -173,7 +170,7 @@ async def cmd_start(message: types.Message):
         "Как работать:\n"
         "1️⃣ В группе отправь фото отчёта.\n"
         "2️⃣ Под фото появится кнопка «Заполнить отчёт».\n"
-        "3️⃣ Откроется форма (WebApp), выбери магазин и введи:\n"
+        "3️⃣ Откроется форма, выбери магазин и введи:\n"
         "   • Буханка\n"
         "   • Лепешки\n"
         "   • Патыр\n"
@@ -356,6 +353,8 @@ async def handle_photo(message: types.Message):
     photo = message.photo[-1]
     file_id = photo.file_id
 
+    logging.info(f"Получено фото от user_id={user_id} в чате {group_chat_id}")
+
     pending_reports[user_id] = {
         "group_chat_id": group_chat_id,
         "photo_file_id": file_id,
@@ -374,7 +373,8 @@ async def handle_photo(message: types.Message):
     )
 
 
-@dp.message_handler(content_types=types.ContentType.WEB_APP_DATA)
+# ⚠️ ВАЖНО: для aiogram 2.25 используем строку "web_app_data"!
+@dp.message_handler(content_types="web_app_data")
 async def handle_web_app_data(message: types.Message):
     """
     Приходит после отправки формы из WebApp.
@@ -382,6 +382,8 @@ async def handle_web_app_data(message: types.Message):
     """
     user_id = message.from_user.id
     state = pending_reports.get(user_id)
+
+    logging.info(f"Получены web_app_data от user_id={user_id}: {message.web_app_data}")
 
     if not state:
         await message.reply("Не найдено соответствующее фото. Отправьте фото ещё раз в группу.")
@@ -441,7 +443,7 @@ async def handle_web_app_data(message: types.Message):
     except Exception as e:
         logging.error(f"Ошибка отправки фото в группу: {e}")
 
-    # Подтверждение пользователю
+    # Подтверждение пользователю / в тот же чат
     await message.reply("Отчёт сохранён и отправлен в группу ✅")
 
 
