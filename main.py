@@ -18,7 +18,8 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (по username без @) =====
-ADMIN_USERNAMES = {"yusubovk"}{"Dsharafeev_TVD"}  # сюда можно добавлять ещё ники
+ADMIN_USERNAMES = {"yusubovk"}  # сюда можно добавлять ещё ники
+
 
 def is_admin(user: types.User) -> bool:
     return bool(user.username and user.username.lower() in ADMIN_USERNAMES)
@@ -270,6 +271,7 @@ def get_prefix(market_name: str) -> str:
     code = market_name.replace("Маркет", "").strip()
     return code.split("-")[0]
 
+
 MARKETS_BY_PREFIX = defaultdict(list)
 for m in MARKETS:
     MARKETS_BY_PREFIX[get_prefix(m)].append(m)
@@ -278,20 +280,24 @@ PREFIXES = sorted(MARKETS_BY_PREFIX.keys())
 
 # ===== СОСТОЯНИЯ И ЕЖЕДНЕВНЫЙ СТАТУС =====
 
-pending_reports = {}  # user_id -> {"step", "prefix", "market", "photo_file_id"}
+# user_id -> {"step", "prefix", "market", "photo_file_id"}
+pending_reports = {}
 daily_reports = {name: False for name in MARKETS}
 current_date = datetime.now().date()
+
 
 def reset_reports():
     global daily_reports, current_date
     current_date = datetime.now().date()
     daily_reports = {name: False for name in MARKETS}
 
+
 def check_date_and_reset():
     global current_date
     today = datetime.now().date()
     if today != current_date:
         reset_reports()
+
 
 # ===== БАЗА ДАННЫХ (SQLite) =====
 
@@ -318,14 +324,14 @@ cur.execute(
 )
 conn.commit()
 
+
 def parse_report_text(text: str):
     """
-    Простенький парсер шаблона:
+    Парсер строк:
     Хлеб: 10
     Лепешки: 5
     Патыр: 3
     Ассортимент: 20
-    Если не получилось распарсить – возвращаем None.
     """
     bread = lep = patyr = assort = None
     lines = text.splitlines()
@@ -345,6 +351,7 @@ def parse_report_text(text: str):
             part = l.split(":", 1)[-1].strip()
             assort = int(part) if part.isdigit() else None
     return bread, lep, patyr, assort
+
 
 def save_report(user: types.User, market: str, photo_file_id: str, text: str):
     bread, lep, patyr, assort = parse_report_text(text)
@@ -372,6 +379,7 @@ def save_report(user: types.User, market: str, photo_file_id: str, text: str):
     )
     conn.commit()
 
+
 # ===== КЛАВИАТУРЫ =====
 
 def prefix_keyboard() -> types.ReplyKeyboardMarkup:
@@ -387,6 +395,7 @@ def prefix_keyboard() -> types.ReplyKeyboardMarkup:
     kb.row(types.KeyboardButton("Отмена"))
     return kb
 
+
 def markets_keyboard(prefix: str) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     markets = MARKETS_BY_PREFIX[prefix]
@@ -401,7 +410,8 @@ def markets_keyboard(prefix: str) -> types.ReplyKeyboardMarkup:
     kb.row(types.KeyboardButton("Отмена"))
     return kb
 
-# ===== ХЕНДЛЕРЫ =====
+
+# ===== ХЕНДЛЕРЫ КОМАНД =====
 
 @dp.message_handler(commands=["start", "help"])
 async def cmd_start(message: types.Message):
@@ -422,9 +432,12 @@ async def cmd_start(message: types.Message):
         "/status – кто уже отправил отчёт за сегодня\n"
         "/reset  – обнулить отчёты (для админов)\n"
         "/export – выгрузить все отчёты в CSV (админ)\n"
-        "/photos_today – фото отчётов за сегодня (админ)"
+        "/photos_today – фото отчётов за сегодня (админ)\n"
+        "   • /photos_today – все маркеты\n"
+        "   • /photos_today Маркет М-11 – только один маркет"
     )
     await message.reply(text)
+
 
 @dp.message_handler(commands=["reset"])
 async def cmd_reset(message: types.Message):
@@ -433,6 +446,7 @@ async def cmd_reset(message: types.Message):
         return
     reset_reports()
     await message.answer("Отчёты обнулены на сегодня. Жду фото от всех маркетов.")
+
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
@@ -461,7 +475,6 @@ async def cmd_status(message: types.Message):
 
     await message.answer(text)
 
-# ==== АДМИН-КОМАНДЫ ДЛЯ БАЗЫ ДАННЫХ ====
 
 @dp.message_handler(commands=["export"])
 async def cmd_export(message: types.Message):
@@ -472,8 +485,17 @@ async def cmd_export(message: types.Message):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, created_at, market, bread, lepeshki, patyr, assortment,
-               user_id, username, full_name
+        SELECT
+            id,
+            datetime(created_at, '+5 hours') AS created_at_uz,
+            market,
+            bread,
+            lepeshki,
+            patyr,
+            assortment,
+            user_id,
+            username,
+            full_name
         FROM reports
         ORDER BY datetime(created_at) ASC
         """
@@ -487,8 +509,8 @@ async def cmd_export(message: types.Message):
     writer = csv.writer(output, delimiter=';')
     writer.writerow([
         "id", "created_at", "market",
-    "Буханку", "лепешки", "патир", "ассортимент",
-    "user_id", "username", "full_name",
+        "Буханку", "лепешки", "патир", "ассортимент",
+        "user_id", "username", "full_name",
     ])
     for r in rows:
         writer.writerow(r)
@@ -499,23 +521,21 @@ async def cmd_export(message: types.Message):
 
     await message.reply_document(buf, caption="Выгрузка всех отчётов из базы.")
 
+
 @dp.message_handler(commands=["photos_today"])
 async def cmd_photos_today(message: types.Message):
     if not is_admin(message.from_user):
         await message.reply("У вас нет прав для этой команды.")
         return
 
-    # аргумент команды после /photos_today
-    # пример: "/photos_today Маркет М-11"
+    # Аргументы после команды: /photos_today Маркет М-11
     args = message.get_args().strip()
     market_filter = None
 
     if args:
-        # если написали "все" или "all" — показываем все маркеты
         if args.lower() in ("все", "all"):
             market_filter = None
         else:
-            # проверяем, что маркет существует в нашем списке
             if args not in MARKETS:
                 await message.reply(
                     "Не нашёл такой маркет.\n"
@@ -525,10 +545,9 @@ async def cmd_photos_today(message: types.Message):
                     "<code>/photos_today все</code>",
                 )
                 return
-            market_filter = args  # конкретный маркет
+            market_filter = args
 
     cur = conn.cursor()
-
     base_sql = """
         SELECT
             market,
@@ -538,7 +557,6 @@ async def cmd_photos_today(message: types.Message):
         WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
           AND photo_file_id IS NOT NULL
     """
-
     params = []
     if market_filter:
         base_sql += " AND market = ?"
@@ -573,7 +591,7 @@ async def cmd_photos_today(message: types.Message):
             logging.error(f"Ошибка отправки фото {file_id}: {e}")
 
 
-# ==== ОСНОВНОЙ ПРОЦЕСС ОТЧЁТА ====
+# ===== ОСНОВНОЙ ПРОЦЕСС ОТЧЁТА =====
 
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
@@ -595,6 +613,7 @@ async def handle_photo(message: types.Message):
         reply_markup=prefix_keyboard(),
     )
 
+
 @dp.message_handler(content_types=types.ContentType.TEXT)
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
@@ -604,12 +623,15 @@ async def handle_text(message: types.Message):
     if text.lower() == "отмена":
         if user_id in pending_reports:
             pending_reports.pop(user_id, None)
-        await message.reply("Операция отменена.", reply_markup=types.ReplyKeyboardRemove())
+        await message.reply(
+            "Операция отменена.",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
         return
 
     state = pending_reports.get(user_id)
 
-    # если нет активного процесса — игнорируем
+    # Нет активного процесса отчёта — игнорируем
     if not state:
         return
 
@@ -633,7 +655,7 @@ async def handle_text(message: types.Message):
         )
         return
 
-    # Шаг 2: выбор маркета
+    # Шаг 2: выбор конкретного маркета
     if step == "choose_market":
         prefix = state.get("prefix")
         markets = MARKETS_BY_PREFIX.get(prefix, [])
@@ -663,7 +685,7 @@ async def handle_text(message: types.Message):
         await message.reply(f"<code>{template_text}</code>")
         return
 
-    # Шаг 3: заполненный шаблон
+    # Шаг 3: приём заполненного шаблона
     if step == "fill_template":
         market_name = state.get("market")
         photo_file_id = state.get("photo_file_id")
@@ -683,6 +705,7 @@ async def handle_text(message: types.Message):
             f"Отчёт для <b>{market_name}</b> сохранён ✅ Спасибо!"
         )
         return
+
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
