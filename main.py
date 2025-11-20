@@ -274,3 +274,506 @@ MARKET_GROUPS = defaultdict(list)
 for m in MARKETS:
     code = m.replace("Маркет", "").strip()  # "B-01", "Dz-01", "А-01"
     prefix = code.split('-')[0].strip()     # "B", "Dz", "А"
+    MARKET_GROUPS[prefix].append(m)
+
+MARKET_GROUP_CODES = sorted(MARKET_GROUPS.keys())
+
+# ===== БАЗА ДАННЫХ =====
+
+DB_PATH = "reports.db"
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cur = conn.cursor()
+cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT,
+        full_name TEXT,
+        market TEXT,
+        bread TEXT,
+        lepeshki TEXT,
+        patyr TEXT,
+        assortment TEXT,
+        raw_text TEXT,
+        photo_file_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+)
+conn.commit()
+logging.info("База данных и таблица reports готовы")
+
+
+def save_report(user: types.User, market: str, photo_file_id: str,
+                bread: str, lepeshki: str, patyr: str, assortment: str,
+                raw_text: str):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO reports
+        (user_id, username, full_name, market,
+         bread, lepeshki, patyr, assortment,
+         raw_text, photo_file_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user.id,
+            user.username,
+            user.full_name,
+            market,
+            bread,
+            lepeshki,
+            patyr,
+            assortment,
+            raw_text,
+            photo_file_id,
+        ),
+    )
+    conn.commit()
+    logging.info(f"Сохранён отчёт: {market}, user_id={user.id}")
+
+
+# ===== СОСТОЯНИЕ ПО ПОЛЬЗОВАТЕЛЮ =====
+# user_id -> dict(step, chat_id, photo_file_id, market_group, market, ostatki, bread, lepeshki, patyr, assortment)
+user_states = {}
+
+
+# ===== ВСПОМОГАТЕЛЬНЫЕ КЛАВИАТУРЫ =====
+
+def kb_market_groups():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    row = []
+    for code in MARKET_GROUP_CODES:
+        row.append(KeyboardButton(code))
+        if len(row) == 4:
+            kb.row(*row)
+            row = []
+    if row:
+        kb.row(*row)
+    return kb
+
+
+def kb_markets_for_group(group_code: str):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for m in MARKET_GROUPS[group_code]:
+        kb.add(KeyboardButton(m))
+    return kb
+
+
+def kb_ostatki():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.row(KeyboardButton("корректные"), KeyboardButton("некорректные"))
+    return kb
+
+
+def kb_level():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.row(KeyboardButton("мало"), KeyboardButton("норм"), KeyboardButton("много"))
+    return kb
+
+
+# ===== КОМАНДЫ =====
+
+@dp.message_handler(commands=["start", "help"])
+async def cmd_start(message: types.Message):
+    text = (
+        "Привет! Я бот для фото-отчётов по магазинам.\n\n"
+        "Как работать:\n"
+        "1️⃣ Отправьте <b>фото</b> в группу или в личку боту.\n"
+        "2️⃣ После фото я спрошу:\n"
+        "   • Группу маркета (букву)\n"
+        "   • Конкретный маркет из списка\n"
+        "   • Остатки: корректные / некорректные\n"
+        "   • Хлеб: мало / норм / много\n"
+        "   • Лепешки: мало / норм / много\n"
+        "   • Патыр: мало / норм / много\n"
+        "   • Ассортимент: мало / норм / много\n"
+        "3️⃣ В конце я отправлю итоговый отчёт с фото и сохраню его в базе.\n\n"
+        "Команды (в личке или в группе):\n"
+        "/status – кто уже отправил отчёт за сегодня\n"
+        "/reset  – удалить отчёты за сегодня (админ)\n"
+        "/export – выгрузить все отчёты в CSV (админ)\n"
+        "/photos_today – фото отчётов за сегодня (админ)\n"
+        "   • /photos_today – все маркеты\n"
+        "   • /photos_today Маркет М-11 – только один маркет"
+    )
+    await message.reply(text)
+
+
+@dp.message_handler(commands=["reset"])
+async def cmd_reset(message: types.Message):
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DELETE FROM reports
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        """
+    )
+    conn.commit()
+    await message.answer("Все отчёты за сегодня удалены. Можно собирать заново.")
+
+
+@dp.message_handler(commands=["status"])
+async def cmd_status(message: types.Message):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT DISTINCT market
+        FROM reports
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        """
+    )
+    rows = cur.fetchall()
+    reported = {r[0] for r in rows}
+
+    done = []
+    not_done = []
+
+    for m in MARKETS:
+        if m in reported:
+            done.append(f"✅ {m}")
+        else:
+            not_done.append(f"❌ {m}")
+
+    text = "Статус отчётов на сегодня (UTC+5):\n\n"
+    if done:
+        text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
+    else:
+        text += "Пока никто не отправил отчёт.\n\n"
+
+    if not_done:
+        text += "Ещё НЕ отправили:\n" + "\n".join(not_done)
+
+    await message.answer(text)
+
+
+@dp.message_handler(commands=["export"])
+async def cmd_export(message: types.Message):
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            id,
+            datetime(created_at, '+5 hours') AS created_at_uz,
+            market,
+            bread,
+            lepeshki,
+            patyr,
+            assortment,
+            user_id,
+            username,
+            full_name
+        FROM reports
+        ORDER BY datetime(created_at) ASC
+        """
+    )
+    rows = cur.fetchall()
+    if not rows:
+        await message.reply("В базе пока нет отчётов.")
+        return
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+    writer.writerow([
+        "id", "created_at", "market",
+        "Буханку", "лепешки", "патир", "ассортимент",
+        "user_id", "username", "full_name",
+    ])
+    for r in rows:
+        writer.writerow(r)
+
+    data = output.getvalue().encode("utf-8-sig")
+    buf = io.BytesIO(data)
+    buf.name = "reports.csv"
+
+    await message.reply_document(buf, caption="Выгрузка всех отчётов из базы.")
+
+
+@dp.message_handler(commands=["photos_today"])
+async def cmd_photos_today(message: types.Message):
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    args = message.get_args().strip()
+    market_filter = None
+
+    if args:
+        if args.lower() in ("все", "all"):
+            market_filter = None
+        else:
+            if args not in MARKETS:
+                await message.reply(
+                    "Не нашёл такой магазин.\n"
+                    "Напишите точно как в списке, например:\n"
+                    "<code>/photos_today Маркет М-11</code>\n"
+                    "или\n"
+                    "<code>/photos_today все</code>",
+                )
+                return
+            market_filter = args
+
+    cur = conn.cursor()
+    base_sql = """
+        SELECT
+            market,
+            photo_file_id,
+            datetime(created_at, '+5 hours') AS created_at_uz
+        FROM reports
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+          AND photo_file_id IS NOT NULL
+    """
+    params = []
+    if market_filter:
+        base_sql += " AND market = ?"
+        params.append(market_filter)
+
+    base_sql += " ORDER BY datetime(created_at) ASC"
+
+    cur.execute(base_sql, params)
+    rows = cur.fetchall()
+
+    if not rows:
+        if market_filter:
+            await message.reply(f"За сегодня нет фото-отчётов по {market_filter}.")
+        else:
+            await message.reply("За сегодня ещё нет фото-отчётов.")
+        return
+
+    if market_filter:
+        await message.reply(
+            f"Фото-отчёты за сегодня по {market_filter}: {len(rows)} шт."
+        )
+    else:
+        await message.reply(
+            f"Фото-отчёты за сегодня по всем маркетам: {len(rows)} шт."
+        )
+
+    for market, file_id, created_at_uz in rows:
+        caption = f"{market}\n{created_at_uz}"
+        try:
+            await message.reply_photo(file_id, caption=caption)
+        except Exception as e:
+            logging.error(f"Ошибка отправки фото: {e}")
+
+
+# ===== ОСНОВНОЙ ПРОЦЕСС: ФОТО + ОПРОС В ТГ =====
+
+@dp.message_handler(content_types=types.ContentType.PHOTO)
+async def handle_photo(message: types.Message):
+    """
+    Магазин присылает фото (в группу или в личку).
+    Запускаем диалог по шагам.
+    """
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    photo = message.photo[-1]
+    file_id = photo.file_id
+
+    logging.info(f"[PHOTO] user_id={user_id}, chat_id={chat_id}, file_id={file_id}")
+
+    user_states[user_id] = {
+        "step": "market_group",
+        "chat_id": chat_id,
+        "photo_file_id": file_id,
+        "market_group": None,
+        "market": None,
+        "ostatki": None,
+        "bread": None,
+        "lepeshki": None,
+        "patyr": None,
+        "assortment": None,
+    }
+
+    await message.reply(
+        "Фото получено ✅\n"
+        "Сначала выберите группу маркета (букву):",
+        reply_markup=kb_market_groups()
+    )
+
+
+@dp.message_handler(lambda m: m.text is not None and m.from_user.id in user_states)
+async def handle_steps(message: types.Message):
+    user_id = message.from_user.id
+    text = message.text.strip()
+    state = user_states[user_id]
+    step = state["step"]
+    chat_id = state["chat_id"]
+
+    # ===== ВЫБОР ГРУППЫ МАРКЕТА =====
+    if step == "market_group":
+        if text not in MARKET_GROUPS:
+            await message.reply(
+                "Выберите группу маркета из списка ниже:",
+                reply_markup=kb_market_groups()
+            )
+            return
+        state["market_group"] = text
+        state["step"] = "market"
+        await message.reply(
+            f"Группа <b>{text}</b> выбрана.\n"
+            f"Теперь выберите конкретный маркет:",
+            reply_markup=kb_markets_for_group(text)
+        )
+        return
+
+    # ===== ВЫБОР КОНКРЕТНОГО МАРКЕТА =====
+    if step == "market":
+        valid_markets = MARKET_GROUPS.get(state["market_group"], [])
+        if text not in valid_markets:
+            await message.reply(
+                "Выберите маркет из списка кнопок ниже.",
+                reply_markup=kb_markets_for_group(state["market_group"])
+            )
+            return
+        state["market"] = text
+        state["step"] = "ostatki"
+        await message.reply(
+            "Остатки: выберите <b>корректные</b> или <b>некорректные</b>.",
+            reply_markup=kb_ostatki()
+        )
+        return
+
+    # ===== ОСТАТКИ =====
+    if step == "ostatki":
+        if text not in ["корректные", "некорректные"]:
+            await message.reply(
+                "Выберите один из вариантов: <b>корректные</b> / <b>некорректные</b>.",
+                reply_markup=kb_ostatki()
+            )
+            return
+        state["ostatki"] = text
+        state["step"] = "bread"
+        await message.reply(
+            "Хлеб: <b>мало</b> / <b>норм</b> / <b>много</b>",
+            reply_markup=kb_level()
+        )
+        return
+
+    # ===== ХЛЕБ =====
+    if step == "bread":
+        if text not in ["мало", "норм", "много"]:
+            await message.reply(
+                "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>",
+                reply_markup=kb_level()
+            )
+            return
+        state["bread"] = text
+        state["step"] = "lepeshki"
+        await message.reply(
+            "Лепешки: <b>мало</b> / <b>норм</b> / <b>много</b>",
+            reply_markup=kb_level()
+        )
+        return
+
+    # ===== ЛЕПЕШКИ =====
+    if step == "lepeshki":
+        if text not in ["мало", "норм", "много"]:
+            await message.reply(
+                "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>",
+                reply_markup=kb_level()
+            )
+            return
+        state["lepeshki"] = text
+        state["step"] = "patyr"
+        await message.reply(
+            "Патыр: <b>мало</b> / <b>норм</b> / <b>много</b>",
+            reply_markup=kb_level()
+        )
+        return
+
+    # ===== ПАТЫР =====
+    if step == "patyr":
+        if text not in ["мало", "норм", "много"]:
+            await message.reply(
+                "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>",
+                reply_markup=kb_level()
+            )
+            return
+        state["patyr"] = text
+        state["step"] = "assortment"
+        await message.reply(
+            "Ассортимент: <b>мало</b> / <b>норм</b> / <b>много</b>",
+            reply_markup=kb_level()
+        )
+        return
+
+    # ===== АССОРТИМЕНТ (ФИНАЛ) =====
+    if step == "assortment":
+        if text not in ["мало", "норм", "много"]:
+            await message.reply(
+                "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>",
+                reply_markup=kb_level()
+            )
+            return
+        state["assortment"] = text
+
+        market = state["market"]
+        ostatki = state["ostatki"]
+        bread = state["bread"]
+        lepeshki = state["lepeshki"]
+        patyr = state["patyr"]
+        assortment = state["assortment"]
+        photo_file_id = state["photo_file_id"]
+
+        raw_text = (
+            f"#Магазин: {market}\n"
+            f"Остатки: {ostatki}\n"
+            f"Хлеб: {bread}\n"
+            f"Лепешки: {lepeshki}\n"
+            f"Патыр: {patyr}\n"
+            f"Ассортимент: {assortment}"
+        )
+
+        # Сохраняем в БД
+        save_report(
+            user=message.from_user,
+            market=market,
+            photo_file_id=photo_file_id,
+            bread=bread,
+            lepeshki=lepeshki,
+            patyr=patyr,
+            assortment=assortment,
+            raw_text=raw_text,
+        )
+
+        # Удаляем состояние
+        user_states.pop(user_id, None)
+
+        # Убираем клавиатуру
+        rm = types.ReplyKeyboardRemove()
+
+        # Итоговый отчёт в тот же чат (группа или личка)
+        try:
+            await bot.send_photo(
+                chat_id,
+                photo_file_id,
+                caption=raw_text,
+                reply_markup=rm
+            )
+        except Exception as e:
+            logging.error(f"Ошибка отправки фото в чат {chat_id}: {e}")
+            await message.reply(raw_text, reply_markup=rm)
+
+        await message.reply("Отчёт сохранён и отправлен ✅", reply_markup=rm)
+        return
+
+
+# Логируем остальные тексты, чтобы видеть активность
+@dp.message_handler(content_types=types.ContentType.TEXT)
+async def debug_text(message: types.Message):
+    logging.info(f"[TEXT] user_id={message.from_user.id}, chat_id={message.chat.id}, text={message.text}")
+
+
+if __name__ == "__main__":
+    logging.info("Бот запускается...")
+    executor.start_polling(dp, skip_updates=True)
