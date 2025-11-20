@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
-import sqlite3
+import os
+import psycopg2
 import io
 import csv
 from collections import defaultdict
@@ -11,10 +12,12 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # 🔐 ТОКЕН ТВОЕГО БОТА
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
+# 👉 Лучше потом вынести в переменную окружения:
+# API_TOKEN = os.getenv("BOT_TOKEN")
 
 # 🔗 ID ГРУППЫ, КУДА ОТПРАВЛЯЕМ ИТОГОВЫЙ ОТЧЁТ
-# пример: TARGET_GROUP_ID = -1003247828545
-TARGET_GROUP_ID = -1003247828545  # <<< ОБЯЗАТЕЛЬНО ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+# пример: TARGET_GROUP_ID = -1001234567890
+TARGET_GROUP_ID = -1003247828545  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,7 +32,7 @@ def is_admin(user: types.User) -> bool:
     return bool(user.username and user.username.lower() in ADMIN_USERNAMES)
 
 
-# ===== СПИСОК МАРКЕТОВ ЧЕРЕЗ МНОГОСТРОЧНУЮ СТРОКУ =====
+# ===== СПИСОК МАРКЕТОВ =====
 MARKETS_TEXT = """
 Маркет B-01
 Маркет B-02
@@ -271,74 +274,85 @@ MARKETS_TEXT = """
 
 MARKETS = [line.strip() for line in MARKETS_TEXT.splitlines() if line.strip()]
 
-# ===== ГРУППИРОВКА МАРКЕТОВ ПО КОДУ (B, D, Dz, K, А, М, С, S...) =====
+# ===== ГРУППИРОВКА МАРКЕТОВ ПО КОДУ =====
 MARKET_GROUPS = defaultdict(list)
 for m in MARKETS:
     code = m.replace("Маркет", "").strip()   # "B-01", "Dz-01", "А-01"
-    prefix = code.split('-')[0].strip()      # "B", "Dz", "А"
+    prefix = code.split('-')[0].strip()
     MARKET_GROUPS[prefix].append(m)
 
 MARKET_GROUP_CODES = sorted(MARKET_GROUPS.keys())
 
-# ===== БАЗА ДАННЫХ =====
+# ===== ПОДКЛЮЧЕНИЕ К POSTGRES =====
 
-DB_PATH = "reports.db"
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cur = conn.cursor()
-cur.execute(
-    """
-    CREATE TABLE IF NOT EXISTS reports (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        username TEXT,
-        full_name TEXT,
-        market TEXT,
-        bread TEXT,
-        lepeshki TEXT,
-        patyr TEXT,
-        assortment TEXT,
-        raw_text TEXT,
-        photo_file_id TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-)
-conn.commit()
-logging.info("База данных и таблица reports готовы")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL не задан. Укажи его в переменных окружения Railway.")
+
+# Если будет ругаться на SSL, можно добавить sslmode='require':
+# conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+conn = psycopg2.connect(DATABASE_URL)
+conn.autocommit = True
+
+
+def init_db():
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                username TEXT,
+                full_name TEXT,
+                market TEXT,
+                bread TEXT,
+                lepeshki TEXT,
+                patyr TEXT,
+                assortment TEXT,
+                raw_text TEXT,
+                photo_file_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    logging.info("Таблица reports в PostgreSQL готова")
+
+
+init_db()
 
 
 def save_report(user: types.User, market: str, photo_file_id: str,
                 bread: str, lepeshki: str, patyr: str, assortment: str,
                 raw_text: str):
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO reports
-        (user_id, username, full_name, market,
-         bread, lepeshki, patyr, assortment,
-         raw_text, photo_file_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user.id,
-            user.username,
-            user.full_name,
-            market,
-            bread,
-            lepeshki,
-            patyr,
-            assortment,
-            raw_text,
-            photo_file_id,
-        ),
-    )
-    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO reports
+            (user_id, username, full_name, market,
+             bread, lepeshki, patyr, assortment,
+             raw_text, photo_file_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                user.id,
+                user.username,
+                user.full_name,
+                market,
+                bread,
+                lepeshki,
+                patyr,
+                assortment,
+                raw_text,
+                photo_file_id,
+            ),
+        )
     logging.info(f"Сохранён отчёт: {market}, user_id={user.id}")
 
 
-# ===== СОСТОЯНИЕ ПО ПОЛЬЗОВАТЕЛЮ (только ЛИЧКА) =====
-# user_id -> dict(step, photo_file_id, market_group, market, ostatki, bread, lepeshki, patyr, assortment)
+# ===== СОСТОЯНИЕ ПО ПОЛЬЗОВАТЕЛЯМ (только личка) =====
 user_states = {}
+
 
 # ===== КЛАВИАТУРЫ =====
 
@@ -387,7 +401,7 @@ async def cmd_start(message: types.Message):
         "   • Конкретный маркет\n"
         "   • Остатки: корректные / некорректные\n"
         "   • Хлеб / Лепешки / Патыр / Ассортимент: мало / норм / много\n"
-        "3️⃣ Я сохраню отчёт в базе и отправлю итог с фото в рабочую группу.\n\n"
+        "3️⃣ Я сохраню отчёт в базе (PostgreSQL) и отправлю итог с фото в рабочую группу.\n\n"
         "Команды (в личке или в группе):\n"
         "/status – кто уже отправил отчёт за сегодня\n"
         "/reset  – удалить отчёты за сегодня (админ)\n"
@@ -405,28 +419,30 @@ async def cmd_reset(message: types.Message):
         await message.reply("У вас нет прав для этой команды.")
         return
 
-    cur = conn.cursor()
-    cur.execute(
-        """
-        DELETE FROM reports
-        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
-        """
-    )
-    conn.commit()
+    # Удаляем только сегодняшние отчёты по времени Asia/Tashkent
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM reports
+            WHERE (created_at AT TIME ZONE 'Asia/Tashkent')::date =
+                  (now() AT TIME ZONE 'Asia/Tashkent')::date
+            """
+        )
     await message.answer("Все отчёты за сегодня удалены. Можно собирать заново.")
 
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT DISTINCT market
-        FROM reports
-        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
-        """
-    )
-    rows = cur.fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT market
+            FROM reports
+            WHERE (created_at AT TIME ZONE 'Asia/Tashkent')::date =
+                  (now() AT TIME ZONE 'Asia/Tashkent')::date
+            """
+        )
+        rows = cur.fetchall()
     reported = {r[0] for r in rows}
 
     done = []
@@ -438,7 +454,7 @@ async def cmd_status(message: types.Message):
         else:
             not_done.append(f"❌ {m}")
 
-    text = "Статус отчётов на сегодня (UTC+5):\n\n"
+    text = "Статус отчётов на сегодня (Asia/Tashkent, UTC+5):\n\n"
     if done:
         text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
     else:
@@ -456,25 +472,26 @@ async def cmd_export(message: types.Message):
         await message.reply("У вас нет прав для этой команды.")
         return
 
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT
-            id,
-            datetime(created_at, '+5 hours') AS created_at_uz,
-            market,
-            bread,
-            lepeshki,
-            patyr,
-            assortment,
-            user_id,
-            username,
-            full_name
-        FROM reports
-        ORDER BY datetime(created_at) ASC
-        """
-    )
-    rows = cur.fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                id,
+                (created_at AT TIME ZONE 'Asia/Tashkent') AS created_at_uz,
+                market,
+                bread,
+                lepeshki,
+                patyr,
+                assortment,
+                user_id,
+                username,
+                full_name
+            FROM reports
+            ORDER BY created_at ASC
+            """
+        )
+        rows = cur.fetchall()
+
     if not rows:
         await message.reply("В базе пока нет отчётов.")
         return
@@ -520,25 +537,26 @@ async def cmd_photos_today(message: types.Message):
                 return
             market_filter = args
 
-    cur = conn.cursor()
     base_sql = """
         SELECT
             market,
             photo_file_id,
-            datetime(created_at, '+5 hours') AS created_at_uz
+            (created_at AT TIME ZONE 'Asia/Tashkent') AS created_at_uz
         FROM reports
-        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        WHERE (created_at AT TIME ZONE 'Asia/Tashkent')::date =
+              (now() AT TIME ZONE 'Asia/Tashkent')::date
           AND photo_file_id IS NOT NULL
     """
     params = []
     if market_filter:
-        base_sql += " AND market = ?"
+        base_sql += " AND market = %s"
         params.append(market_filter)
 
-    base_sql += " ORDER BY datetime(created_at) ASC"
+    base_sql += " ORDER BY created_at ASC"
 
-    cur.execute(base_sql, params)
-    rows = cur.fetchall()
+    with conn.cursor() as cur:
+        cur.execute(base_sql, params)
+        rows = cur.fetchall()
 
     if not rows:
         if market_filter:
@@ -568,10 +586,6 @@ async def cmd_photos_today(message: types.Message):
 
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
-    """
-    Фото обрабатываем ТОЛЬКО в личке.
-    Если фото пришло в группу — просим отправить в личку.
-    """
     if message.chat.type != "private":
         await message.reply(
             "Пожалуйста, отправьте фото отчёта в ЛИЧКУ боту. "
@@ -613,7 +627,7 @@ async def handle_steps(message: types.Message):
     state = user_states[user_id]
     step = state["step"]
 
-    # ===== ВЫБОР ГРУППЫ МАРКЕТА =====
+    # ВЫБОР ГРУППЫ
     if step == "market_group":
         if text not in MARKET_GROUPS:
             await message.reply(
@@ -624,13 +638,12 @@ async def handle_steps(message: types.Message):
         state["market_group"] = text
         state["step"] = "market"
         await message.reply(
-            f"Группа <b>{text}</b> выбрана.\n"
-            f"Теперь выберите конкретный маркет:",
+            f"Группа <b>{text}</b> выбрана.\nТеперь выберите конкретный маркет:",
             reply_markup=kb_markets_for_group(text)
         )
         return
 
-    # ===== ВЫБОР КОНКРЕТНОГО МАРКЕТА =====
+    # ВЫБОР МАРКЕТА
     if step == "market":
         valid_markets = MARKET_GROUPS.get(state["market_group"], [])
         if text not in valid_markets:
@@ -647,7 +660,7 @@ async def handle_steps(message: types.Message):
         )
         return
 
-    # ===== ОСТАТКИ =====
+    # ОСТАТКИ
     if step == "ostatki":
         if text not in ["корректные", "некорректные"]:
             await message.reply(
@@ -663,7 +676,7 @@ async def handle_steps(message: types.Message):
         )
         return
 
-    # ===== ХЛЕБ =====
+    # ХЛЕБ
     if step == "bread":
         if text not in ["мало", "норм", "много"]:
             await message.reply(
@@ -679,7 +692,7 @@ async def handle_steps(message: types.Message):
         )
         return
 
-    # ===== ЛЕПЕШКИ =====
+    # ЛЕПЕШКИ
     if step == "lepeshki":
         if text not in ["мало", "норм", "много"]:
             await message.reply(
@@ -695,7 +708,7 @@ async def handle_steps(message: types.Message):
         )
         return
 
-    # ===== ПАТЫР =====
+    # ПАТЫР
     if step == "patyr":
         if text not in ["мало", "норм", "много"]:
             await message.reply(
@@ -711,7 +724,7 @@ async def handle_steps(message: types.Message):
         )
         return
 
-    # ===== АССОРТИМЕНТ (ФИНАЛ) =====
+    # АССОРТИМЕНТ — ФИНАЛ
     if step == "assortment":
         if text not in ["мало", "норм", "много"]:
             await message.reply(
@@ -738,7 +751,6 @@ async def handle_steps(message: types.Message):
             f"Ассортимент: {assortment}"
         )
 
-        # Сохраняем в БД
         save_report(
             user=message.from_user,
             market=market,
@@ -750,12 +762,10 @@ async def handle_steps(message: types.Message):
             raw_text=raw_text,
         )
 
-        # Удаляем состояние
         user_states.pop(user_id, None)
-
         rm = types.ReplyKeyboardRemove()
 
-        # Итоговый отчёт отправляем В ГРУППУ
+        # Отчёт в рабочую группу
         if TARGET_GROUP_ID:
             try:
                 await bot.send_photo(
@@ -766,17 +776,15 @@ async def handle_steps(message: types.Message):
             except Exception as e:
                 logging.error(f"Ошибка отправки фото в группу {TARGET_GROUP_ID}: {e}")
 
-        # И подтверждаем пользователю в личке
         await message.reply("Отчёт сохранён и отправлен в рабочую группу ✅", reply_markup=rm)
         return
 
 
-# Логируем остальные тексты (но не мешаем диалогу)
 @dp.message_handler(content_types=types.ContentType.TEXT)
 async def debug_text(message: types.Message):
     logging.info(f"[TEXT] user_id={message.from_user.id}, chat_type={message.chat.type}, text={message.text}")
 
 
 if __name__ == "__main__":
-    logging.info("Бот запускается...")
+    logging.info("Бот запускается с PostgreSQL...")
     executor.start_polling(dp, skip_updates=True)
