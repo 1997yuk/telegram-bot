@@ -14,7 +14,7 @@ API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
 # пример: -1001234567890
-TARGET_GROUP_ID = -1003247828545  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+TARGET_GROUP_ID = -1001234567890  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,14 +22,14 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (username без @) =====
-ADMIN_USERNAMES = {"yusubovk", "DSharafeev_TVD"}
+ADMIN_USERNAMES = {"yusubovk"}
 
 
 def is_admin(user: types.User) -> bool:
     return bool(user.username and user.username.lower() in ADMIN_USERNAMES)
 
 
-# ===== СПИСОК МАРКЕТОВ =====
+# ===== СПИСОК МАРКЕТОВ (ТОЛЬКО НУЖНЫЕ) =====
 MARKETS_TEXT = """
 Маркет С-16
 Маркет С-17
@@ -45,12 +45,11 @@ MARKETS_TEXT = """
 Маркет М-137
 Маркет М-144
 Маркет М-151
-
 """
 
 MARKETS = [line.strip() for line in MARKETS_TEXT.splitlines() if line.strip()]
 
-# Группировка по префиксу (B, D, Dz, K, А, М, С, S...)
+# Группировка по префиксу (С, М...)
 MARKET_GROUPS = defaultdict(list)
 for m in MARKETS:
     code = m.replace("Маркет", "").strip()
@@ -101,9 +100,18 @@ if "incoming" not in cols:
 logging.info("База данных и таблица reports готовы")
 
 
-def save_report(user: types.User, market: str, photo_file_id: str,
-                ostatki: str, incoming: str, bread: str, lepeshki: str,
-                patyr: str, assortment: str, raw_text: str):
+def save_report(
+    user: types.User,
+    market: str,
+    photo_file_id: str,
+    ostatki: str,
+    incoming: str,
+    bread: str,
+    lepeshki: str,
+    patyr: str,
+    assortment: str,
+    raw_text: str,
+):
     cur = conn.cursor()
     cur.execute(
         """
@@ -205,7 +213,10 @@ async def cmd_start(message: types.Message):
     await message.reply(text, reply_markup=kb_lang())
 
 
-@dp.message_handler(lambda m: m.chat.type == "private" and m.text in ("Русский 🇷🇺", "O‘zbekcha 🇺🇿"))
+@dp.message_handler(
+    lambda m: m.chat.type == "private"
+    and m.text in ("Русский 🇷🇺", "O‘zbekcha 🇺🇿")
+)
 async def set_language(message: types.Message):
     user_id = message.from_user.id
     if message.text == "O‘zbekcha 🇺🇿":
@@ -350,7 +361,7 @@ async def cmd_photos_today(message: types.Message):
                 await message.reply(
                     "Не нашёл такой магазин.\n"
                     "Напишите точно как в списке, например:\n"
-                    "<code>/photos_today Маркет М-11</code>\n"
+                    "<code>/photos_today Маркет М-53</code>\n"
                     "или\n"
                     "<code>/photos_today все</code>",
                 )
@@ -406,7 +417,7 @@ async def cmd_photos_today(message: types.Message):
 async def handle_photo(message: types.Message):
     if message.chat.type != "private":
         await message.reply(
-            "Пожалуйста, отправьте фото отчёта in ЛИЧКУ боту. "
+            "Пожалуйста, отправьте фото отчёта в ЛИЧКУ боту. "
             "В группе будут только готовые отчёты."
         )
         return
@@ -535,11 +546,11 @@ async def handle_steps(message: types.Message):
         if lang == "uz":
             txt = "Non: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b>"
         else:
-            txt = "Хлеб: <b>мало</b> / <b>норм</b> / <b>много</b>"
+            txt = "Буханка: <b>мало</b> / <b>норм</b> / <b>много</b>"
         await message.reply(txt, reply_markup=kb_level(lang))
         return
 
-    # хлеб
+    # буханка
     if step == "bread":
         if lang == "uz":
             allowed = ["kam", "yetarli", "ko'p"]
@@ -677,7 +688,7 @@ async def handle_steps(message: types.Message):
             f"#Магазин: {market}\n"
             f"Остатки проверил?: {ru_ostatki}\n"
             f"Приход был?: {ru_incoming}\n"
-            f"Хлеб: {ru_bread}\n"
+            f"Буханка: {ru_bread}\n"
             f"Лепешки: {ru_lepeshki}\n"
             f"Патыр: {ru_patyr}\n"
             f"Ассортимент: {ru_assortment}"
@@ -724,5 +735,7 @@ async def debug_text(message: types.Message):
 
 
 if __name__ == "__main__":
-    logging.info("Бот запускается (SQLite, RU/UZ, отчёт в группе только на русском)...")
+    logging.info(
+        "Бот запускается (SQLite, RU/UZ, ограниченный список маркетов, отчёт в группе только на русском)..."
+    )
     executor.start_polling(dp, skip_updates=True)
