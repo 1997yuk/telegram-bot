@@ -293,6 +293,7 @@ cur.execute(
         username TEXT,
         full_name TEXT,
         market TEXT,
+        ostatki TEXT,
         incoming TEXT,
         bread TEXT,
         lepeshki TEXT,
@@ -306,9 +307,13 @@ cur.execute(
 )
 conn.commit()
 
-# Добавляем колонку incoming, если её не было
+# Добавляем поля, если таблица была старой
 cur.execute("PRAGMA table_info(reports)")
 cols = [row[1] for row in cur.fetchall()]
+if "ostatki" not in cols:
+    cur.execute("ALTER TABLE reports ADD COLUMN ostatki TEXT")
+    conn.commit()
+    logging.info("Добавлена колонка ostatki в таблицу reports")
 if "incoming" not in cols:
     cur.execute("ALTER TABLE reports ADD COLUMN incoming TEXT")
     conn.commit()
@@ -318,22 +323,23 @@ logging.info("База данных и таблица reports готовы")
 
 
 def save_report(user: types.User, market: str, photo_file_id: str,
-                incoming: str, bread: str, lepeshki: str,
+                ostatki: str, incoming: str, bread: str, lepeshki: str,
                 patyr: str, assortment: str, raw_text: str):
     cur = conn.cursor()
     cur.execute(
         """
         INSERT INTO reports
         (user_id, username, full_name, market,
-         incoming, bread, lepeshki, patyr, assortment,
+         ostatki, incoming, bread, lepeshki, patyr, assortment,
          raw_text, photo_file_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user.id,
             user.username,
             user.full_name,
             market,
+            ostatki,
             incoming,
             bread,
             lepeshki,
@@ -389,9 +395,9 @@ def kb_markets_for_group(group_code: str):
 def kb_ostatki(lang: str):
     kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     if lang == "uz":
-        kb.row(KeyboardButton("to'g'ri"), KeyboardButton("noto'g'ri"))
+        kb.row(KeyboardButton("ha"), KeyboardButton("yoq"))
     else:
-        kb.row(KeyboardButton("корректные"), KeyboardButton("некорректные"))
+        kb.row(KeyboardButton("да"), KeyboardButton("нет"))
     return kb
 
 
@@ -502,6 +508,7 @@ async def cmd_export(message: types.Message):
             id,
             datetime(created_at, '+5 hours') AS created_at_uz,
             market,
+            ostatki,
             incoming,
             bread,
             lepeshki,
@@ -526,6 +533,7 @@ async def cmd_export(message: types.Message):
             "id",
             "created_at",
             "market",
+            "остатки",
             "приход",
             "Буханку",
             "лепешки",
@@ -619,7 +627,7 @@ async def cmd_photos_today(message: types.Message):
 async def handle_photo(message: types.Message):
     if message.chat.type != "private":
         await message.reply(
-            "Пожалуйста, отправьте фото отчёта в ЛИЧКУ боту. "
+            "Пожалуйста, отправьте фото отчёта in ЛИЧКУ боту. "
             "В группе будут только готовые отчёты."
         )
         return
@@ -698,37 +706,37 @@ async def handle_steps(message: types.Message):
         state["market"] = text
         state["step"] = "ostatki"
         if lang == "uz":
-            txt = "Qoldiq: <b>to'g'ri</b> yoki <b>noto'g'ri</b>ni tanlang."
+            txt = "ostatok tekshirdingmi? <b>ha</b> / <b>yoq</b>"
         else:
-            txt = "Остатки: выберите <b>корректные</b> или <b>некорректные</b>."
+            txt = "Остатки проверил? <b>да</b> / <b>нет</b>"
         await message.reply(txt, reply_markup=kb_ostatki(lang))
         return
 
-    # остатки
+    # остатки (да/нет)
     if step == "ostatki":
         if lang == "uz":
-            allowed = ["to'g'ri", "noto'g'ri"]
+            allowed = ["ha", "yoq"]
         else:
-            allowed = ["корректные", "некорректные"]
+            allowed = ["да", "нет"]
 
         if text not in allowed:
             if lang == "uz":
-                txt = "Tanlang: <b>to'g'ri</b> yoki <b>noto'g'ri</b>."
+                txt = "Tanlang: <b>ha</b> yoki <b>yoq</b>."
             else:
-                txt = "Выберите: <b>корректные</b> или <b>некорректные</b>."
+                txt = "Выберите: <b>да</b> или <b>нет</b>."
             await message.reply(txt, reply_markup=kb_ostatki(lang))
             return
 
         state["ostatki"] = text
         state["step"] = "incoming"
         if lang == "uz":
-            txt = "Prixod boldimi: <b>Ha</b> / <b>Yo'q</b>"
+            txt = "Prixod boldimi? <b>Ha</b> / <b>Yo'q</b>"
         else:
-            txt = "Приход был: <b>Да</b> / <b>Нет</b>"
+            txt = "Приход был? <b>Да</b> / <b>Нет</b>"
         await message.reply(txt, reply_markup=kb_incoming(lang))
         return
 
-    # приход был
+    # приход был?
     if step == "incoming":
         if lang == "uz":
             allowed = ["Ha", "Yo'q"]
@@ -852,31 +860,34 @@ async def handle_steps(message: types.Message):
         photo_file_id = state["photo_file_id"]
 
         # === Маппинг в РУССКИЕ значения для отчёта и БД ===
-        def map_ostatki_ru(v: str) -> str:
-            if v in ("корректные", "to'g'ri"):
-                return "корректные"
-            if v in ("некорректные", "noto'g'ri"):
-                return "некорректные"
+        def map_yesno_ru_from_ostatki(v: str) -> str:
+            v_lower = v.lower()
+            if v_lower in ("да", "ha"):
+                return "Да"
+            if v_lower in ("нет", "yoq"):
+                return "Нет"
             return v
 
-        def map_incoming_ru(v: str) -> str:
-            if v in ("Да", "Ha"):
+        def map_yesno_ru(v: str) -> str:
+            v_lower = v.lower()
+            if v_lower in ("да", "ha"):
                 return "Да"
-            if v in ("Нет", "Yo'q"):
+            if v_lower in ("нет", "yo'q", "yoq"):
                 return "Нет"
             return v
 
         def map_level_ru(v: str) -> str:
-            if v in ("мало", "kam"):
+            v_lower = v.lower()
+            if v_lower in ("мало", "kam"):
                 return "мало"
-            if v in ("норм", "yetarli"):
+            if v_lower in ("норм", "yetarli"):
                 return "норм"
-            if v in ("много", "ko'p"):
+            if v_lower in ("много", "ko'p"):
                 return "много"
             return v
 
-        ru_ostatki = map_ostatki_ru(ostatki)
-        ru_incoming = map_incoming_ru(incoming)
+        ru_ostatki = map_yesno_ru_from_ostatki(ostatki)
+        ru_incoming = map_yesno_ru(incoming)
         ru_bread = map_level_ru(bread)
         ru_lepeshki = map_level_ru(lepeshki)
         ru_patyr = map_level_ru(patyr)
@@ -885,8 +896,8 @@ async def handle_steps(message: types.Message):
         # русский текст отчёта (для группы и БД)
         raw_text = (
             f"#Магазин: {market}\n"
-            f"Остатки: {ru_ostatki}\n"
-            f"Приход был: {ru_incoming}\n"
+            f"Остатки проверил?: {ru_ostatki}\n"
+            f"Приход был?: {ru_incoming}\n"
             f"Хлеб: {ru_bread}\n"
             f"Лепешки: {ru_lepeshki}\n"
             f"Патыр: {ru_patyr}\n"
@@ -898,6 +909,7 @@ async def handle_steps(message: types.Message):
             user=message.from_user,
             market=market,
             photo_file_id=photo_file_id,
+            ostatki=ru_ostatki,
             incoming=ru_incoming,
             bread=ru_bread,
             lepeshki=ru_lepeshki,
