@@ -569,21 +569,33 @@ async def handle_web_app_data(message: types.Message):
         await message.reply("Не найдено связанное фото. Отправьте фото ещё раз.")
         return
 
+    # 🔍 DEBUG: показать сырые данные, которые пришли из WebApp
     try:
-        data = json.loads(message.web_app_data.data)
+        raw_json = message.web_app_data.data
+    except Exception as e:
+        logging.error(f"Нет web_app_data.data: {e}")
+        await message.reply("Ошибка: не удалось прочитать данные WebApp.")
+        return
+
+    # Показываем их тебе в чате, чтобы было видно, что вообще пришло
+    await message.reply(f"DEBUG WebApp данные:\n<code>{raw_json}</code>")
+
+    # Пытаемся распарсить JSON
+    try:
+        data = json.loads(raw_json)
     except Exception as e:
         logging.error(f"Ошибка парсинга WebApp data: {e}")
-        await message.reply("Ошибка обработки данных, попробуйте ещё раз.")
+        await message.reply("Ошибка обработки данных (JSON). Попробуйте ещё раз.")
         return
 
     market = data.get("market")
-    bread = int(data.get("bread", 0))
-    lepeshki = int(data.get("lepeshki", 0))
-    patyr = int(data.get("patyr", 0))
-    assortment = int(data.get("assortment", 0))
+    bread = int(data.get("bread", 0) or 0)
+    lepeshki = int(data.get("lepeshki", 0) or 0)
+    patyr = int(data.get("patyr", 0) or 0)
+    assortment = int(data.get("assortment", 0) or 0)
 
     if market not in MARKETS:
-        await message.reply("Неверный маркет в отчёте, попробуйте ещё раз.")
+        await message.reply(f"Неверный маркет в отчёте: {market!r}. Попробуйте ещё раз.")
         return
 
     photo_file_id = state["photo_file_id"]
@@ -596,6 +608,7 @@ async def handle_web_app_data(message: types.Message):
         f"Ассортимент: {assortment}"
     )
 
+    # Сохраняем в БД
     save_report(
         user=message.from_user,
         market=market,
@@ -607,6 +620,7 @@ async def handle_web_app_data(message: types.Message):
         raw_text=raw_text,
     )
 
+    # Чистим временное состояние
     pending_reports.pop(user_id, None)
 
     # Итоговый отчёт в рабочую группу
@@ -620,7 +634,9 @@ async def handle_web_app_data(message: types.Message):
         except Exception as e:
             logging.error(f"Ошибка отправки фото в группу {TARGET_GROUP_ID}: {e}")
 
-    await message.reply("Отчёт сохранён и отправлен в рабочую группу ✅")
+    # Подтверждение пользователю
+    await message.reply("Отчёт сохранён в базе и отправлен в рабочую группу ✅")
+
 
 
 # Просто логируем любой текст, чтобы видеть, что бот жив
