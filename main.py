@@ -2,6 +2,9 @@
 import logging
 from datetime import datetime
 from collections import defaultdict
+import sqlite3
+import io
+import csv
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
@@ -13,6 +16,13 @@ logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
+
+# ===== АДМИНЫ (по username без @) =====
+ADMIN_USERNAMES = {"yusubovk"}  # сюда можно добавлять ещё ники
+
+def is_admin(user: types.User) -> bool:
+    return bool(user.username and user.username.lower() in ADMIN_USERNAMES)
+
 
 # ===== СПИСОК МАРКЕТОВ =====
 MARKETS = [
@@ -254,32 +264,28 @@ MARKETS = [
     "Маркет Dz-04",
 ]
 
-# ===== ГРУППИРУЕМ МАРКЕТЫ ПО ПРЕФИКСУ (B, D, Dz, K, А, М, С, S) =====
+# ===== ГРУППИРОВКА ПО ПРЕФИКСАМ =====
 
 def get_prefix(market_name: str) -> str:
-    # "Маркет B-01" -> "B"
-    code = market_name.replace("Маркет", "").strip()  # "B-01"
-    return code.split("-")[0]  # "B" или "Dz" и т.п.
+    code = market_name.replace("Маркет", "").strip()
+    return code.split("-")[0]
 
 MARKETS_BY_PREFIX = defaultdict(list)
 for m in MARKETS:
-    p = get_prefix(m)
-    MARKETS_BY_PREFIX[p].append(m)
+    MARKETS_BY_PREFIX[get_prefix(m)].append(m)
 
-PREFIXES = sorted(MARKETS_BY_PREFIX.keys())  # список типа ['A', 'B', 'D', 'Dz', ...]
+PREFIXES = sorted(MARKETS_BY_PREFIX.keys())
 
-# ===== СОСТОЯНИЯ И ОТЧЁТЫ =====
+# ===== СОСТОЯНИЯ И ЕЖЕДНЕВНЫЙ СТАТУС =====
 
-pending_reports = {}  # user_id -> {"step": ..., "prefix": ..., "market": ...}
+pending_reports = {}  # user_id -> {"step", "prefix", "market", "photo_file_id"}
 daily_reports = {name: False for name in MARKETS}
 current_date = datetime.now().date()
-
 
 def reset_reports():
     global daily_reports, current_date
     current_date = datetime.now().date()
     daily_reports = {name: False for name in MARKETS}
-
 
 def check_date_and_reset():
     global current_date
@@ -287,10 +293,88 @@ def check_date_and_reset():
     if today != current_date:
         reset_reports()
 
+# ===== БАЗА ДАННЫХ (SQLite) =====
+
+DB_PATH = "reports.db"
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cur = conn.cursor()
+cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT,
+        full_name TEXT,
+        market TEXT,
+        bread INTEGER,
+        lepeshki INTEGER,
+        patyr INTEGER,
+        assortment INTEGER,
+        raw_text TEXT,
+        photo_file_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+)
+conn.commit()
+
+def parse_report_text(text: str):
+    """
+    Простенький парсер шаблона:
+    Хлеб: 10
+    Лепешки: 5
+    Патыр: 3
+    Ассортимент: 20
+    Если не получилось распарсить – возвращаем None.
+    """
+    bread = lep = patyr = assort = None
+    lines = text.splitlines()
+    for line in lines:
+        l = line.strip()
+        lower = l.lower()
+        if lower.startswith("хлеб"):
+            part = l.split(":", 1)[-1].strip()
+            bread = int(part) if part.isdigit() else None
+        elif lower.startswith("лепешк"):
+            part = l.split(":", 1)[-1].strip()
+            lep = int(part) if part.isdigit() else None
+        elif lower.startswith("патыр"):
+            part = l.split(":", 1)[-1].strip()
+            patyr = int(part) if part.isdigit() else None
+        elif "ассортимент" in lower:
+            part = l.split(":", 1)[-1].strip()
+            assort = int(part) if part.isdigit() else None
+    return bread, lep, patyr, assort
+
+def save_report(user: types.User, market: str, photo_file_id: str, text: str):
+    bread, lep, patyr, assort = parse_report_text(text)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO reports
+        (user_id, username, full_name, market,
+         bread, lepeshki, patyr, assortment,
+         raw_text, photo_file_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user.id,
+            user.username,
+            user.full_name,
+            market,
+            bread,
+            lep,
+            patyr,
+            assort,
+            text,
+            photo_file_id,
+        ),
+    )
+    conn.commit()
+
 # ===== КЛАВИАТУРЫ =====
 
 def prefix_keyboard() -> types.ReplyKeyboardMarkup:
-    """Клавиатура с префиксами маркетов (B, D, Dz, K, A, M, S, C...)."""
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     row = []
     for i, p in enumerate(PREFIXES, start=1):
@@ -303,9 +387,7 @@ def prefix_keyboard() -> types.ReplyKeyboardMarkup:
     kb.row(types.KeyboardButton("Отмена"))
     return kb
 
-
 def markets_keyboard(prefix: str) -> types.ReplyKeyboardMarkup:
-    """Клавиатура со списком маркетов конкретного префикса."""
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     markets = MARKETS_BY_PREFIX[prefix]
     row = []
@@ -338,16 +420,19 @@ async def cmd_start(message: types.Message):
         "Заполняешь числа и отправляешь одним сообщением.\n\n"
         "Команды:\n"
         "/status – кто уже отправил отчёт за сегодня\n"
-        "/reset  – вручную обнулить отчёты (для ответственного)"
+        "/reset  – обнулить отчёты (для админов)\n"
+        "/export – выгрузить все отчёты в CSV (админ)\n"
+        "/photos_today – фото отчётов за сегодня (админ)"
     )
     await message.reply(text)
 
-
 @dp.message_handler(commands=["reset"])
 async def cmd_reset(message: types.Message):
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
     reset_reports()
     await message.answer("Отчёты обнулены на сегодня. Жду фото от всех маркетов.")
-
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
@@ -376,27 +461,94 @@ async def cmd_status(message: types.Message):
 
     await message.answer(text)
 
+# ==== АДМИН-КОМАНДЫ ДЛЯ БАЗЫ ДАННЫХ ====
 
-# 1. ПОЛУЧАЕМ ФОТО — ЗАПУСКАЕМ ВЫБОР ПРЕФИКСА
+@dp.message_handler(commands=["export"])
+async def cmd_export(message: types.Message):
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, created_at, market, bread, lepeshki, patyr, assortment,
+               user_id, username, full_name
+        FROM reports
+        ORDER BY datetime(created_at) ASC
+        """
+    )
+    rows = cur.fetchall()
+    if not rows:
+        await message.reply("В базе пока нет отчётов.")
+        return
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+    writer.writerow([
+        "id", "created_at", "market",
+        "bread", "lepeshki", "patyr", "assortment",
+        "user_id", "username", "full_name",
+    ])
+    for r in rows:
+        writer.writerow(r)
+
+    data = output.getvalue().encode("utf-8-sig")
+    buf = io.BytesIO(data)
+    buf.name = "reports.csv"
+
+    await message.reply_document(buf, caption="Выгрузка всех отчётов из базы.")
+
+@dp.message_handler(commands=["photos_today"])
+async def cmd_photos_today(message: types.Message):
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT market, photo_file_id, created_at
+        FROM reports
+        WHERE date(created_at, 'localtime') = date('now','localtime')
+          AND photo_file_id IS NOT NULL
+        ORDER BY datetime(created_at) ASC
+        """
+    )
+    rows = cur.fetchall()
+    if not rows:
+        await message.reply("За сегодня ещё нет фото-отчётов.")
+        return
+
+    await message.reply(f"Фото-отчёты за сегодня: {len(rows)} шт.")
+    for market, file_id, created_at in rows:
+        caption = f"{market}\n{created_at}"
+        try:
+            await message.reply_photo(file_id, caption=caption)
+        except Exception as e:
+            logging.error(f"Ошибка отправки фото {file_id}: {e}")
+
+# ==== ОСНОВНОЙ ПРОЦЕСС ОТЧЁТА ====
 
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
     check_date_and_reset()
 
     user_id = message.from_user.id
+    photo = message.photo[-1]
+    file_id = photo.file_id
+
     pending_reports[user_id] = {
         "step": "choose_prefix",
         "prefix": None,
         "market": None,
+        "photo_file_id": file_id,
     }
 
     await message.reply(
         "Выбери префикс своего маркета (буква/сочетание букв):",
         reply_markup=prefix_keyboard(),
     )
-
-
-# 2. ОБРАБОТКА ТЕКСТА (ПРЕФИКС / МАРКЕТ / ШАБЛОН)
 
 @dp.message_handler(content_types=types.ContentType.TEXT)
 async def handle_text(message: types.Message):
@@ -412,7 +564,7 @@ async def handle_text(message: types.Message):
 
     state = pending_reports.get(user_id)
 
-    # Если нет активного процесса отчёта — игнорируем текст
+    # если нет активного процесса — игнорируем
     if not state:
         return
 
@@ -436,7 +588,7 @@ async def handle_text(message: types.Message):
         )
         return
 
-    # Шаг 2: выбор конкретного маркета
+    # Шаг 2: выбор маркета
     if step == "choose_market":
         prefix = state.get("prefix")
         markets = MARKETS_BY_PREFIX.get(prefix, [])
@@ -459,33 +611,33 @@ async def handle_text(message: types.Message):
         )
 
         await message.reply(
-            "Теперь заполни шаблон, указав количество по каждому пункту "
+            "Теперь заполни шаблон, указав количества по каждому пункту "
             "и отправь СЛЕДУЮЩИМ сообщением:",
             reply_markup=types.ReplyKeyboardRemove(),
         )
         await message.reply(f"<code>{template_text}</code>")
         return
 
-    # Шаг 3: приём заполненного шаблона
+    # Шаг 3: заполненный шаблон
     if step == "fill_template":
         market_name = state.get("market")
+        photo_file_id = state.get("photo_file_id")
         if not market_name:
             pending_reports.pop(user_id, None)
-            await message.reply("Ошибка состояния, начни заново: отправь фото.")
+            await message.reply("Ошибка состояния, начни заново (отправь фото).")
             return
 
         check_date_and_reset()
         daily_reports[market_name] = True
 
-        # логируем текст отчёта
-        logging.info(f"Отчёт от {user_id} ({market_name}):\n{text}")
+        # сохраняем в базу
+        save_report(message.from_user, market_name, photo_file_id, text)
 
         pending_reports.pop(user_id, None)
         await message.reply(
             f"Отчёт для <b>{market_name}</b> сохранён ✅ Спасибо!"
         )
         return
-
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
