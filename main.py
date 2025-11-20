@@ -21,7 +21,7 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (username без @) =====
-ADMIN_USERNAMES = {"yusubovk", "DSharafeev_TVD"}
+ADMIN_USERNAMES = {"yusubovk"}
 
 
 def is_admin(user: types.User) -> bool:
@@ -245,6 +245,10 @@ def kb_level(lang: str):
 # ===== КОМАНДЫ =====
 @dp.message_handler(commands=["start", "help"])
 async def cmd_start(message: types.Message):
+    # /start и /help — ТОЛЬКО в личке, в группах полностью игнор
+    if message.chat.type != "private":
+        return
+
     text = "Выберите язык / Tilni tanlang:\n\nРусский 🇷🇺 / O‘zbekcha 🇺🇿"
     await message.reply(text, reply_markup=kb_lang())
 
@@ -289,7 +293,7 @@ async def cmd_reset(message: types.Message):
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
-    # ✅ только для админов
+    # только для админов (в личке и в группах)
     if not is_admin(message.from_user):
         await message.reply("У вас нет прав для этой команды.")
         return
@@ -302,29 +306,6 @@ async def cmd_status(message: types.Message):
         WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
         """
     )
-    rows = cur.fetchall()
-    reported = {r[0] for r in rows}
-
-    done = []
-    not_done = []
-
-    for m in MARKETS:
-        if m in reported:
-            done.append(f"✅ {m}")
-        else:
-            not_done.append(f"❌ {m}")
-
-    text = "Статус отчётов на сегодня (UTC+5):\n\n"
-    if done:
-        text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
-    else:
-        text += "Пока никто не отправил отчёт.\n\n"
-
-    if not_done:
-        text += "Ещё НЕ отправили:\n" + "\n".join(not_done)
-
-    await message.answer(text)
-
     rows = cur.fetchall()
     reported = {r[0] for r in rows}
 
@@ -479,10 +460,14 @@ async def cmd_photos_today(message: types.Message):
 # ===== ОБРАБОТКА ФОТО (ТОЛЬКО ЛИЧКА) =====
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
+    # если это группа и отправитель не админ — вообще молчим
     if message.chat.type != "private":
+        if not is_admin(message.from_user):
+            return
+        # админу в группе можем подсказать, что бот работает только в личке
         await message.reply(
-            "Пожалуйста, отправьте фото отчёта в ЛИЧКУ боту. "
-            "В группе будут только готовые отчёты."
+            "Бот принимает отчёты только в личных сообщениях.\n"
+            "Пожалуйста, отправьте фото боту в личку."
         )
         return
 
@@ -793,6 +778,10 @@ async def handle_steps(message: types.Message):
 
 @dp.message_handler(content_types=types.ContentType.TEXT)
 async def debug_text(message: types.Message):
+    # В группах не отвечаем обычным пользователям вообще
+    if message.chat.type != "private" and not is_admin(message.from_user):
+        return
+
     logging.info(
         f"[TEXT] user_id={message.from_user.id}, chat_type={message.chat.type}, text={message.text}"
     )
@@ -800,6 +789,6 @@ async def debug_text(message: types.Message):
 
 if __name__ == "__main__":
     logging.info(
-        "Бот запускается (SQLite, RU/UZ, язык сохраняется в БД, ограниченный список маркетов)..."
+        "Бот запускается (SQLite, RU/UZ, язык в БД, ограниченный список маркетов, в группах — только админ-команды)..."
     )
     executor.start_polling(dp, skip_updates=True)
