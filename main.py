@@ -18,7 +18,7 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ (по username без @) =====
-ADMIN_USERNAMES = {"yusubovk"}  # сюда можно добавлять ещё ники
+ADMIN_USERNAMES = {"yusubovk" , "@as_7z7"}  # сюда можно добавлять ещё ники
 
 
 def is_admin(user: types.User) -> bool:
