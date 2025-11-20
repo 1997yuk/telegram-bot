@@ -3,9 +3,9 @@ import logging
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types
-from aiogram import executor
+from aiogram.utils import executor
 
-# 🔐 ТВОЙ ТОКЕН БОТА
+# 🔐 ТОКЕН ТВОЕГО БОТА
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 logging.basicConfig(level=logging.INFO)
@@ -253,59 +253,67 @@ MARKETS = [
     "Маркет Dz-04",
 ]
 
-# Сколько маркетов показывать на одной "странице" меню
-PAGE_SIZE = 10
+# сколько маркетов показывать на одной странице
+PAGE_SIZE = 20
 
-# название маркета -> отчитался (True/False) за сегодня
-daily_reports = {}
-current_date = None
+# состояние по пользователям: ждём выбор маркета / заполнение шаблона
+# user_id -> {"step": "choose_market"/"fill_template", "market_idx": int}
+pending_reports = {}
 
-# user_id -> состояние ввода (ожидаем выбор маркета/шаблон)
-pending_reports = {}  # {user_id: {"step": "choose_market"/"fill_template", "date": date, "market": str}}
+# статус отчётов по маркетам на сегодня
+daily_reports = {name: False for name in MARKETS}
+current_date = datetime.now().date()
 
 
 def reset_reports():
-    """Сброс статуса ежедневных отчётов."""
+    """Сброс статуса отчётов на новый день."""
     global daily_reports, current_date
     current_date = datetime.now().date()
     daily_reports = {name: False for name in MARKETS}
 
 
-reset_reports()
+def check_date_and_reset():
+    """Если день сменился — обнуляем отчёты."""
+    global current_date
+    today = datetime.now().date()
+    if today != current_date:
+        reset_reports()
 
 
 def make_markets_keyboard(page: int = 0) -> types.InlineKeyboardMarkup:
     """
-    Клавиатура с выбором маркета, постранично.
-    page = 0,1,2,...
+    Клавиатура с выбором маркета.
+    2 столбца, постранично.
+    В callback_data передаём индекс маркета: m:<idx>
     """
-    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb = types.InlineKeyboardMarkup(row_width=2)
 
     start = page * PAGE_SIZE
-    end = start + PAGE_SIZE
+    end = min(len(MARKETS), start + PAGE_SIZE)
 
-    # кнопки маркетов
-    for name in MARKETS[start:end]:
-        kb.add(
+    buttons = []
+    for idx in range(start, end):
+        name = MARKETS[idx]
+        buttons.append(
             types.InlineKeyboardButton(
                 text=name,
-                callback_data=f"market:{name}",
+                callback_data=f"m:{idx}",
             )
         )
 
-    # кнопки навигации
+    # раскладываем по 2 кнопки в ряд
+    for i in range(0, len(buttons), 2):
+        kb.row(*buttons[i:i + 2])
+
+    # навигация
     nav_buttons = []
     if page > 0:
         nav_buttons.append(
-            types.InlineKeyboardButton(
-                text="⬅️ Назад", callback_data=f"page:{page-1}"
-            )
+            types.InlineKeyboardButton("⬅️ Назад", callback_data=f"p:{page - 1}")
         )
     if end < len(MARKETS):
         nav_buttons.append(
-            types.InlineKeyboardButton(
-                text="Вперёд ➡️", callback_data=f"page:{page+1}"
-            )
+            types.InlineKeyboardButton("Вперёд ➡️", callback_data=f"p:{page + 1}")
         )
     if nav_buttons:
         kb.row(*nav_buttons)
@@ -317,33 +325,26 @@ def make_markets_keyboard(page: int = 0) -> types.InlineKeyboardMarkup:
 async def cmd_start(message: types.Message):
     text = (
         "Привет! Я бот для фото-отчётов по магазинам.\n\n"
-        "Как это работает:\n"
-        "1️⃣ Отправляешь фото в рабочую группу.\n"
-        "2️⃣ Бот попросит выбрать магазин из списка.\n"
-        "3️⃣ Бот пришлёт шаблон:\n"
-        "<code>#Магазин:\nОстатки:\nХлеб:\nЛепешки:\nПатыр:\nАссортимент:</code>\n"
-        "4️⃣ Заполняешь числа и отправляешь одним сообщением.\n\n"
+        "Как работать:\n"
+        "1️⃣ Отправь фото в рабочую группу.\n"
+        "2️⃣ Я предложу выбрать магазин из списка.\n"
+        "3️⃣ Я пришлю шаблон, ты его заполнишь числами и отправишь.\n\n"
         "Команды:\n"
         "/status – кто уже отправил отчёт за сегодня\n"
-        "/reset – обнулить отчёты (для админа)"
+        "/reset – вручную обнулить отчёты (для ответственного)"
     )
     await message.reply(text)
 
 
 @dp.message_handler(commands=["reset"])
 async def cmd_reset(message: types.Message):
-    """Обнулить отчёты на сегодня (лучше использовать только админам)."""
     reset_reports()
     await message.answer("Отчёты обнулены на сегодня. Жду фото от всех маркетов.")
 
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
-    """Показать, какие маркеты уже отправили отчёт, а какие нет."""
-    global current_date
-    today = datetime.now().date()
-    if current_date != today:
-        reset_reports()
+    check_date_and_reset()
 
     done = []
     not_done = []
@@ -354,6 +355,7 @@ async def cmd_status(message: types.Message):
         else:
             not_done.append(f"❌ {name}")
 
+    today = datetime.now().date()
     text = f"Статус отчётов на сегодня ({today}):\n\n"
     if done:
         text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
@@ -368,61 +370,57 @@ async def cmd_status(message: types.Message):
     await message.answer(text)
 
 
-# === 1. ПОЛУЧАЕМ ФОТО И ЗАПУСКАЕМ ВЫБОР МАРКЕТА ===
+# 1. Пользователь отправляет фото — запускаем выбор маркета
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
-    """
-    Любое фото – запуск отчёта:
-    1) Сохраняем состояние "ожидаем выбор маркета".
-    2) Показываем список маркетов.
-    """
-    global current_date
-    today = datetime.now().date()
-    if current_date != today:
-        reset_reports()
+    check_date_and_reset()
 
     user_id = message.from_user.id
-
-    pending_reports[user_id] = {
-        "step": "choose_market",
-        "date": today,
-        "market": None,
-    }
+    pending_reports[user_id] = {"step": "choose_market", "market_idx": None}
 
     await message.reply(
-        "Выберите ваш магазин из списка ниже:",
+        "Выберите ваш магазин:",
         reply_markup=make_markets_keyboard(page=0),
     )
 
 
-# === 2. СМЕНА СТРАНИЦЫ В СПИСКЕ МАРКЕТОВ ===
-@dp.callback_query_handler(lambda c: c.data.startswith("page:"))
-async def process_page_callback(callback_query: types.CallbackQuery):
-    page = int(callback_query.data.split(":", 1)[1])
+# 2. Перелистывание страниц списка маркетов
+@dp.callback_query_handler(lambda c: c.data.startswith("p:"))
+async def page_callback(callback_query: types.CallbackQuery):
+    try:
+        page = int(callback_query.data.split(":", 1)[1])
+    except ValueError:
+        await callback_query.answer("Ошибка страницы", show_alert=True)
+        return
+
     await callback_query.message.edit_reply_markup(
         make_markets_keyboard(page=page)
     )
-    await callback_query.answer()
+    await callback_query.answer()  # убираем "часик"
 
 
-# === 3. ВЫБОР КОНКРЕТНОГО МАРКЕТА ===
-@dp.callback_query_handler(lambda c: c.data.startswith("market:"))
-async def process_market_callback(callback_query: types.CallbackQuery):
+# 3. Выбор конкретного маркета
+@dp.callback_query_handler(lambda c: c.data.startswith("m:"))
+async def market_callback(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    data = pending_reports.get(user_id)
+    state = pending_reports.get(user_id)
 
-    # Если отчёта для этого пользователя нет – игнорируем
-    if not data or data.get("step") != "choose_market":
-        await callback_query.answer("Нет активного отчёта. Отправь фото ещё раз.")
+    if not state or state.get("step") != "choose_market":
+        await callback_query.answer(
+            "Нет активного отчёта. Отправь фото ещё раз.",
+            show_alert=True,
+        )
         return
 
-    market_name = callback_query.data.split(":", 1)[1]
-    data["market"] = market_name
-    data["step"] = "fill_template"
+    try:
+        idx = int(callback_query.data.split(":", 1)[1])
+        market_name = MARKETS[idx]
+    except (ValueError, IndexError):
+        await callback_query.answer("Ошибка выбора маркета", show_alert=True)
+        return
 
-    # На всякий случай добавим маркет в словарь отчётов, если его там нет
-    if market_name not in daily_reports:
-        daily_reports[market_name] = False
+    state["market_idx"] = idx
+    state["step"] = "fill_template"
 
     template_text = (
         f"#Магазин: {market_name}\n"
@@ -434,45 +432,38 @@ async def process_market_callback(callback_query: types.CallbackQuery):
     )
 
     await callback_query.message.reply(
-        "Теперь заполни шаблон, указав количество штук по каждому пункту "
-        "и отправь СЛЕДУЮЩИМ сообщением:",
+        "Теперь заполни этот шаблон и отправь его следующим сообщением:"
     )
     await callback_query.message.reply(f"<code>{template_text}</code>")
+    await callback_query.answer("Маркет выбран ✅")
 
-    await callback_query.answer("Маркет выбран!")
 
-
-# === 4. ПОЛУЧАЕМ ЗАПОЛНЕННЫЙ ШАБЛОН ===
+# 4. Принимаем заполненный шаблон
 @dp.message_handler(content_types=types.ContentType.TEXT)
 async def handle_template_text(message: types.Message):
     user_id = message.from_user.id
-    data = pending_reports.get(user_id)
+    state = pending_reports.get(user_id)
 
-    # Если нет активного шага "заполни шаблон" – просто игнорируем текст
-    if not data or data.get("step") != "fill_template":
+    if not state or state.get("step") != "fill_template":
+        # это обычное сообщение, не часть отчёта – игнорируем
         return
 
-    # Можно добавить простую проверку, что текст похож на нужный шаблон
-    # но жёстко не будем валидировать, чтобы не мешать людям.
-    market_name = data.get("market")
-    report_date = data.get("date")
-    today = datetime.now().date()
-
-    # Если дата сменилась – считаем, что отчёт просрочен
-    if report_date != today:
+    market_idx = state.get("market_idx")
+    if market_idx is None or not (0 <= market_idx < len(MARKETS)):
         pending_reports.pop(user_id, None)
-        await message.reply("День уже сменился, отправь, пожалуйста, новый отчёт с фото.")
+        await message.reply("Ошибка состояния, отправь фото ещё раз.")
         return
 
-    # Отмечаем маркет как отчитавшийся
+    market_name = MARKETS[market_idx]
+
+    # отмечаем, что маркет отчитался
+    check_date_and_reset()
     daily_reports[market_name] = True
 
-    # Можно сохранить сам текст отчёта в лог / БД (здесь просто логируем)
-    logging.info(f"Отчёт {market_name} от {user_id}: {message.text}")
+    # можно логировать текст отчёта
+    logging.info(f"Отчёт от {user_id} ({market_name}):\n{message.text}")
 
-    # Очищаем состояние
     pending_reports.pop(user_id, None)
-
     await message.reply(f"Отчёт для <b>{market_name}</b> сохранён ✅ Спасибо!")
 
 
