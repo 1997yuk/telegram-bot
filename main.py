@@ -29,7 +29,7 @@ ADMIN_IDS = {
 
 # Суперадмины (reset, export + всё, что у обычных админов)
 SUPER_ADMIN_IDS = {
-    7299148874,  # <<< сюда тоже свой ID (может быть тот же, что и выше)
+    7299148874, # <<< сюда тоже свой ID (может быть тот же, что и выше)
 }
 
 
@@ -341,25 +341,21 @@ async def cmd_status(message: types.Message):
     not_done = []
 
     for m in MARKETS:
+        code = m.replace("Маркет", "").strip()
         if m in last_by_market:
             ost, inc, br, le, pa, ass = last_by_market[m]
             line = (
-                f"✅ {m} — "
-                f"остатки: {ost}, "
-                f"приход: {inc}, "
-                f"буханка: {br}, "
-                f"лепешки: {le}, "
-                f"патыр: {pa}, "
-                f"ассортимент: {ass}"
+                f"✅ {code} | Ост: {ost} | Прх: {inc} | "
+                f"Б: {br} | Л: {le} | П: {pa} | Ас: {ass}"
             )
             done.append(line)
         else:
-            not_done.append(f"❌ {m}")
+            not_done.append(f"❌ {code}")
 
     text = "Статус отчётов на сегодня (UTC+5):\n\n"
 
     if done:
-        text += "Отправили отчёт (последние ответы за сегодня):\n"
+        text += "Код | Ост | Прх | Б | Л | П | Ас\n"
         text += "\n".join(done) + "\n\n"
     else:
         text += "Пока никто не отправил отчёт.\n\n"
@@ -550,7 +546,8 @@ async def cmd_photos_today(message: types.Message):
         )
 
     for market, file_id, created_at_uz in rows:
-        caption = f"{market}\n{created_at_uz}"
+        code = market.replace("Маркет", "").strip()
+        caption = f"{code}\n{created_at_uz}"
         try:
             await message.reply_photo(file_id, caption=caption)
         except Exception as e:
@@ -637,7 +634,7 @@ async def handle_steps(message: types.Message):
         valid_markets = MARKET_GROUPS.get(state["market_group"], [])
         if text not in valid_markets:
             if lang == "uz":
-                txt = "Quyidagi tugмалardan Do'konni tanlang."
+                txt = "Quyidagi tugmalardan Do'konni tanlang."
             else:
                 txt = "Выберите маркет из списка кнопок ниже."
             await message.reply(
@@ -757,7 +754,7 @@ async def handle_steps(message: types.Message):
             allowed = ["мало", "норм", "много"]
 
         if text not in allowed:
-            if lang == "uz":
+            if lang == "уз":
                 txt = "Patir: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
             else:
                 txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
@@ -833,8 +830,10 @@ async def handle_steps(message: types.Message):
         ru_patyr = map_level_ru(patyr)
         ru_assortment = map_level_ru(assortment)
 
+        market_code = market.replace("Маркет", "").strip()
+
         raw_text = (
-            f"#Магазин: {market}\n"
+            f"#Магазин: {market_code}\n"
             f"Остатки проверил?: {ru_ostatki}\n"
             f"Приход был?: {ru_incoming}\n"
             f"Буханка: {ru_bread}\n"
@@ -845,7 +844,7 @@ async def handle_steps(message: types.Message):
 
         save_report(
             user=message.from_user,
-            market=market,
+            market=market,  # в базе оставляем полное название "Маркет С-16"
             photo_file_id=photo_file_id,
             ostatki=ru_ostatki,
             incoming=ru_incoming,
@@ -859,7 +858,7 @@ async def handle_steps(message: types.Message):
         user_states.pop(user_id, None)
         rm = ReplyKeyboardRemove()
 
-        # отправляем отчёт в рабочую группу (только на русском)
+        # отправляем отчёт в рабочую группу (только на русском, с кодом магазина)
         if TARGET_GROUP_ID:
             try:
                 await bot.send_photo(TARGET_GROUP_ID, photo_file_id, caption=raw_text)
