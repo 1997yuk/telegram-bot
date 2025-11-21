@@ -5,7 +5,7 @@ import io
 import csv
 from collections import defaultdict
 
-import psycopg2
+import psycopg
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
@@ -89,7 +89,7 @@ for m in MARKETS:
 MARKET_GROUP_CODES = sorted(MARKET_GROUPS.keys())
 
 # ===== ПОДКЛЮЧЕНИЕ К POSTGRES =====
-conn = psycopg2.connect(DATABASE_URL)
+conn = psycopg.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
 
