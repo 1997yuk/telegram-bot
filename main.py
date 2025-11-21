@@ -13,7 +13,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
-TARGET_GROUP_ID = -1003203445630  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+TARGET_GROUP_ID = -1001234567890  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -245,10 +245,19 @@ def kb_level(lang: str):
 # ===== КОМАНДЫ =====
 @dp.message_handler(commands=["start", "help"])
 async def cmd_start(message: types.Message):
-    # /start и /help — ТОЛЬКО в личке, в группах полностью игнор
+    # В ГРУППЕ:
+    # - если НЕ админ — полностью игнорируем /start и /help
+    # - если админ — даём подсказку, что бот работает в личке
     if message.chat.type != "private":
+        if not is_admin(message.from_user):
+            return
+        await message.reply(
+            "Этот бот собирает отчёты только в личных сообщениях.\n"
+            "Попросите сотрудников отправлять фото и ответы боту в личку."
+        )
         return
 
+    # В ЛИЧКЕ: обычный выбор языка
     text = "Выберите язык / Tilni tanlang:\n\nРусский 🇷🇺 / O‘zbekcha 🇺🇿"
     await message.reply(text, reply_markup=kb_lang())
 
@@ -476,7 +485,9 @@ async def handle_photo(message: types.Message):
     file_id = photo.file_id
     lang = get_lang(user_id)
 
-    logging.info(f"[PHOTO] user_id={user_id}, private chat, file_id={file_id}, lang={lang}")
+    logging.info(
+        f"[PHOTO] user_id={user_id}, private chat, file_id={file_id}, lang={lang}"
+    )
 
     user_states[user_id] = {
         "step": "market_group",
