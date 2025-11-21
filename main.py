@@ -23,7 +23,7 @@ dp = Dispatcher(bot)
 # ===== АДМИНЫ ПО ID =====
 # Обычные админы (могут status, photos_today, report)
 ADMIN_IDS = {
-    7299148874, 
+    7299148874,
     44405876, # <<< сюда поставь свой Telegram ID и других админов через запятую
 }
 
@@ -260,9 +260,7 @@ def kb_level(lang: str):
 # ===== КОМАНДЫ =====
 @dp.message_handler(commands=["start", "help"])
 async def cmd_start(message: types.Message):
-    # В ГРУППЕ:
-    # - если НЕ админ — полностью игнорируем /start и /help
-    # - если админ — даём подсказку, что бот работает в личке
+    # В ГРУППЕ: обычных пользователей игнорируем, админам говорим, что бот работает в личке
     if message.chat.type != "private":
         if not is_admin(message.from_user):
             return
@@ -272,7 +270,7 @@ async def cmd_start(message: types.Message):
         )
         return
 
-    # В ЛИЧКЕ: обычный выбор языка
+    # В ЛИЧКЕ: выбор языка
     text = "Выберите язык / Tilni tanlang:\n\nРусский 🇷🇺 / O‘zbekcha 🇺🇿"
     await message.reply(text, reply_markup=kb_lang())
 
@@ -723,4 +721,173 @@ async def handle_steps(message: types.Message):
         if lang == "uz":
             txt = "Yopgan non: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b>"
         else:
-            txt = "Лепешки: <b>мало</b> /
+            txt = "Лепешки: <b>мало</b> / <b>норм</b> / <b>много</b>"
+        await message.reply(txt, reply_markup=kb_level(lang))
+        return
+
+    # лепешки
+    if step == "lepeshki":
+        if lang == "uz":
+            allowed = ["kam", "yetarli", "ko'p"]
+        else:
+            allowed = ["мало", "норм", "много"]
+
+        if text not in allowed:
+            if lang == "uz":
+                txt = "Yopgan non: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
+            else:
+                txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
+            await message.reply(txt, reply_markup=kb_level(lang))
+            return
+
+        state["lepeshki"] = text
+        state["step"] = "patyr"
+        if lang == "uz":
+            txt = "Patir: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b>"
+        else:
+            txt = "Патыр: <b>мало</b> / <b>норм</b> / <b>много</b>"
+        await message.reply(txt, reply_markup=kb_level(lang))
+        return
+
+    # патыр
+    if step == "patyr":
+        if lang == "uz":
+            allowed = ["kam", "yetarli", "ko'p"]
+        else:
+            allowed = ["мало", "норм", "много"]
+
+        if text not in allowed:
+            if lang == "uz":
+                txt = "Patir: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
+            else:
+                txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
+            await message.reply(txt, reply_markup=kb_level(lang))
+            return
+
+        state["patyr"] = text
+        state["step"] = "assortment"
+        if lang == "uz":
+            txt = "Assortiment: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b>"
+        else:
+            txt = "Ассортимент: <b>мало</b> / <b>норм</b> / <b>много</b>"
+        await message.reply(txt, reply_markup=kb_level(lang))
+        return
+
+    # ассортимент (финал)
+    if step == "assortment":
+        if lang == "uz":
+            allowed = ["kam", "yetarli", "ko'p"]
+        else:
+            allowed = ["мало", "норм", "много"]
+
+        if text not in allowed:
+            if lang == "uz":
+                txt = "Assortiment: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
+            else:
+                txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
+            await message.reply(txt, reply_markup=kb_level(lang))
+            return
+
+        state["assortment"] = text
+
+        market = state["market"]
+        ostatki = state["ostatki"]
+        incoming = state["incoming"]
+        bread = state["bread"]
+        lepeshki = state["lepeshki"]
+        patyr = state["patyr"]
+        assortment = state["assortment"]
+        photo_file_id = state["photo_file_id"]
+
+        # маппинг ответов в русские значения
+        def map_yesno_ru_from_ostatki(v: str) -> str:
+            v_lower = v.lower()
+            if v_lower in ("да", "ha"):
+                return "Да"
+            if v_lower in ("нет", "yoq"):
+                return "Нет"
+            return v
+
+        def map_yesno_ru(v: str) -> str:
+            v_lower = v.lower()
+            if v_lower in ("да", "ha"):
+                return "Да"
+            if v_lower in ("нет", "yo'q", "yoq"):
+                return "Нет"
+            return v
+
+        def map_level_ru(v: str) -> str:
+            v_lower = v.lower()
+            if v_lower in ("мало", "kam"):
+                return "мало"
+            if v_lower in ("норм", "yetarli"):
+                return "норм"
+            if v_lower in ("много", "ko'p"):
+                return "много"
+            return v
+
+        ru_ostatki = map_yesno_ru_from_ostatki(ostatki)
+        ru_incoming = map_yesno_ru(incoming)
+        ru_bread = map_level_ru(bread)
+        ru_lepeshki = map_level_ru(lepeshki)
+        ru_patyr = map_level_ru(patyr)
+        ru_assortment = map_level_ru(assortment)
+
+        raw_text = (
+            f"#Магазин: {market}\n"
+            f"Остатки проверил?: {ru_ostatki}\n"
+            f"Приход был?: {ru_incoming}\n"
+            f"Буханка: {ru_bread}\n"
+            f"Лепешки: {ru_lepeshki}\n"
+            f"Патыр: {ru_patyr}\n"
+            f"Ассортимент: {ru_assortment}"
+        )
+
+        save_report(
+            user=message.from_user,
+            market=market,
+            photo_file_id=photo_file_id,
+            ostatki=ru_ostatki,
+            incoming=ru_incoming,
+            bread=ru_bread,
+            lepeshki=ru_lepeshki,
+            patyr=ru_patyr,
+            assortment=ru_assortment,
+            raw_text=raw_text,
+        )
+
+        user_states.pop(user_id, None)
+        rm = ReplyKeyboardRemove()
+
+        # отправляем отчёт в рабочую группу (только на русском)
+        if TARGET_GROUP_ID:
+            try:
+                await bot.send_photo(TARGET_GROUP_ID, photo_file_id, caption=raw_text)
+            except Exception as e:
+                logging.error(f"Ошибка отправки фото в группу {TARGET_GROUP_ID}: {e}")
+
+        if lang == "uz":
+            txt = "Hisobot saqlandi va ishchi guruhga yuborildi ✅"
+        else:
+            txt = "Отчёт сохранён и отправлен в рабочую группу ✅"
+
+        await message.reply(txt, reply_markup=rm)
+        return
+
+
+@dp.message_handler(content_types=types.ContentType.TEXT)
+async def debug_text(message: types.Message):
+    # В группах не отвечаем обычным пользователям вообще
+    if message.chat.type != "private" and not is_admin(message.from_user):
+        return
+
+    logging.info(
+        f"[TEXT] user_id={message.from_user.id}, chat_type={message.chat.type}, text={message.text}"
+    )
+
+
+if __name__ == "__main__":
+    logging.info(
+        "Бот запускается (SQLite, RU/UZ, админы по user_id, роли админ/суперадмин)..."
+    )
+    executor.start_polling(dp, skip_updates=True)
