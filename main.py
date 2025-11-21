@@ -14,13 +14,22 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
-TARGET_GROUP_ID = -1003203445630  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+TARGET_GROUP_ID = -1001234567890  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
-# 🔗 URL PostgreSQL из переменной окружения
+# 🔗 URL PostgreSQL (Neon). Можно взять из Railway/Neon.
+# Сначала пробуем переменную окружения, если вдруг заработает.
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL не задан. Добавь переменную окружения с URL Postgres.")
+    # <<< СЮДА ВСТАВЬ СВОЙ URL ИЗ NEON (как в Railway Variables)
+    DATABASE_URL = "postgresql://neondb_owner:npg_LA2lJSMwx6yt@ep-dry-queen-aduf06vl-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+    # НЕ выкладывай этот файл в публичный репозиторий!
+
+logging.basicConfig(level=logging.INFO)
+
+bot = Bot(token=API_TOKEN, parse_mode="HTML")
+dp = Dispatcher(bot)
+
 
 logging.basicConfig(level=logging.INFO)
 
