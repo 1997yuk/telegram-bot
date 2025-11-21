@@ -13,7 +13,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
-TARGET_GROUP_ID = -1003203445630  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+TARGET_GROUP_ID = -1003247828545  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -21,16 +21,15 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ ПО ID =====
-# Обычные админы (могут status, photos_today)
+# Обычные админы (могут status, photos_today, report)
 ADMIN_IDS = {
-    7299148874,
-    44405876, # <<< сюда поставь свой Telegram ID
+    7299148874, 
+    44405876, # <<< сюда поставь свой Telegram ID и других админов через запятую
 }
 
 # Суперадмины (reset, export + всё, что у обычных админов)
 SUPER_ADMIN_IDS = {
-    7299148874,
-    44405876, # <<< сюда тоже свой ID (может быть тот же, что и выше)
+    7299148874,  # <<< сюда тоже свой ID (может быть тот же, что и выше)
 }
 
 
@@ -124,7 +123,7 @@ if "incoming" not in cols:
     conn.commit()
     logging.info("Добавлена колонка incoming в таблицу reports")
 
-logging.info("База данных и таблицы готовы")
+logging.info("База данных и таблицы (SQLite) готовы")
 
 # ===== КЭШ ЯЗЫКА В ПАМЯТИ =====
 USER_LANG = {}  # user_id -> 'ru' / 'uz'
@@ -172,8 +171,8 @@ def save_report(
     assortment: str,
     raw_text: str,
 ):
-    cur = conn.cursor()
-    cur.execute(
+    c = conn.cursor()
+    c.execute(
         """
         INSERT INTO reports
         (user_id, username, full_name, market,
@@ -306,8 +305,8 @@ async def cmd_reset(message: types.Message):
         await message.reply("У вас нет прав для этой команды.")
         return
 
-    cur = conn.cursor()
-    cur.execute(
+    c = conn.cursor()
+    c.execute(
         """
         DELETE FROM reports
         WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
@@ -324,29 +323,46 @@ async def cmd_status(message: types.Message):
         await message.reply("У вас нет прав для этой команды.")
         return
 
-    cur = conn.cursor()
-    cur.execute(
+    c = conn.cursor()
+    # Берём все отчёты за сегодня и по каждому маркету оставляем последний (по id)
+    c.execute(
         """
-        SELECT DISTINCT market
+        SELECT market, ostatki, incoming, bread, lepeshki, patyr, assortment, id
         FROM reports
         WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        ORDER BY id
         """
     )
-    rows = cur.fetchall()
-    reported = {r[0] for r in rows}
+    rows = c.fetchall()
+
+    last_by_market = {}
+    for market, ostatki, incoming, bread, lepeshki, patyr, assortment, _id in rows:
+        last_by_market[market] = (ostatki, incoming, bread, lepeshki, patyr, assortment)
 
     done = []
     not_done = []
 
     for m in MARKETS:
-        if m in reported:
-            done.append(f"✅ {m}")
+        if m in last_by_market:
+            ost, inc, br, le, pa, ass = last_by_market[m]
+            line = (
+                f"✅ {m} — "
+                f"остатки: {ost}, "
+                f"приход: {inc}, "
+                f"буханка: {br}, "
+                f"лепешки: {le}, "
+                f"патыр: {pa}, "
+                f"ассортимент: {ass}"
+            )
+            done.append(line)
         else:
             not_done.append(f"❌ {m}")
 
     text = "Статус отчётов на сегодня (UTC+5):\n\n"
+
     if done:
-        text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
+        text += "Отправили отчёт (последние ответы за сегодня):\n"
+        text += "\n".join(done) + "\n\n"
     else:
         text += "Пока никто не отправил отчёт.\n\n"
 
@@ -356,6 +372,64 @@ async def cmd_status(message: types.Message):
     await message.answer(text)
 
 
+@dp.message_handler(commands=["report"])
+async def cmd_report(message: types.Message):
+    """
+    /report Маркет М-53
+    Показывает последний отчёт за сегодня по указанному маркету.
+    """
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    args = message.get_args().strip()
+    if not args:
+        await message.reply(
+            "Укажите магазин, например:\n"
+            "<code>/report Маркет М-53</code>"
+        )
+        return
+
+    if args not in MARKETS:
+        await message.reply(
+            "Не нашёл такой магазин.\n"
+            "Напишите точно как в списке, например:\n"
+            "<code>/report Маркет М-53</code>"
+        )
+        return
+
+    market = args
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT
+            id,
+            datetime(created_at, '+5 hours') AS created_at_uz,
+            raw_text,
+            photo_file_id
+        FROM reports
+        WHERE market = ?
+          AND date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (market,),
+    )
+    row = c.fetchone()
+
+    if not row:
+        await message.reply("Сегодня по этому маркету ещё нет отчёта.")
+        return
+
+    _id, created_at_uz, raw_text, photo_file_id = row
+    caption = f"{raw_text}\n\nВремя (UTC+5): {created_at_uz}"
+
+    if photo_file_id:
+        await message.reply_photo(photo_file_id, caption=caption)
+    else:
+        await message.reply(caption)
+
+
 @dp.message_handler(commands=["export"])
 async def cmd_export(message: types.Message):
     # ❗Только супер-админ
@@ -363,8 +437,8 @@ async def cmd_export(message: types.Message):
         await message.reply("У вас нет прав для этой команды.")
         return
 
-    cur = conn.cursor()
-    cur.execute(
+    c = conn.cursor()
+    c.execute(
         """
         SELECT
             id,
@@ -383,7 +457,7 @@ async def cmd_export(message: types.Message):
         ORDER BY datetime(created_at) ASC
         """
     )
-    rows = cur.fetchall()
+    rows = c.fetchall()
     if not rows:
         await message.reply("В базе пока нет отчётов.")
         return
@@ -441,7 +515,7 @@ async def cmd_photos_today(message: types.Message):
                 return
             market_filter = args
 
-    cur = conn.cursor()
+    c = conn.cursor()
     base_sql = """
         SELECT
             market,
@@ -458,8 +532,8 @@ async def cmd_photos_today(message: types.Message):
 
     base_sql += " ORDER BY datetime(created_at) ASC"
 
-    cur.execute(base_sql, params)
-    rows = cur.fetchall()
+    c.execute(base_sql, params)
+    rows = c.fetchall()
 
     if not rows:
         if market_filter:
@@ -546,7 +620,7 @@ async def handle_steps(message: types.Message):
     if step == "market_group":
         if text not in MARKET_GROUPS:
             if lang == "uz":
-                txt = "Quyidagi ro'yxatdan guruhni tanlang:"
+                txt = "Quyidagi ro'yхatdan guruhni tanlang:"
             else:
                 txt = "Выберите группу маркета из списка ниже:"
             await message.reply(txt, reply_markup=kb_market_groups())
@@ -565,7 +639,7 @@ async def handle_steps(message: types.Message):
         valid_markets = MARKET_GROUPS.get(state["market_group"], [])
         if text not in valid_markets:
             if lang == "uz":
-                txt = "Quyidagi tugmalardan Do'konni tanlang."
+                txt = "Quyidagi tugмалardan Do'konni tanlang."
             else:
                 txt = "Выберите маркет из списка кнопок ниже."
             await message.reply(
@@ -649,176 +723,4 @@ async def handle_steps(message: types.Message):
         if lang == "uz":
             txt = "Yopgan non: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b>"
         else:
-            txt = "Лепешки: <b>мало</b> / <b>норм</b> / <b>много</b>"
-        await message.reply(txt, reply_markup=kb_level(lang))
-        return
-
-    # лепешки
-    if step == "lepeshki":
-        if lang == "uz":
-            allowed = ["kam", "yetarli", "ko'p"]
-        else:
-            allowed = ["мало", "норм", "много"]
-
-        if text not in allowed:
-            if lang == "uz":
-                txt = "Yopgan non: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
-            else:
-                txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
-            await message.reply(txt, reply_markup=kb_level(lang))
-            return
-
-        state["lepeshki"] = text
-        state["step"] = "patyr"
-        if lang == "uz":
-            txt = "Patir: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b>"
-        else:
-            txt = "Патыр: <b>мало</b> / <b>норм</b> / <b>много</b>"
-        await message.reply(txt, reply_markup=kb_level(lang))
-        return
-
-    # патыр
-    if step == "patyr":
-        if lang == "uz":
-            allowed = ["kam", "yetarli", "ko'p"]
-        else:
-            allowed = ["мало", "норм", "много"]
-
-        if text not in allowed:
-            if lang == "uz":
-                txt = "Patir: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
-            else:
-                txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
-            await message.reply(txt, reply_markup=kb_level(lang))
-            return
-
-        state["patyr"] = text
-        state["step"] = "assortment"
-        if lang == "uz":
-            txt = "Assortiment: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b>"
-        else:
-            txt = "Ассортимент: <b>мало</b> / <b>норм</b> / <b>много</b>"
-        await message.reply(txt, reply_markup=kb_level(lang))
-        return
-
-    # ассортимент (финал)
-    if step == "assortment":
-        if lang == "uz":
-            allowed = ["kam", "yetarli", "ko'p"]
-        else:
-            allowed = ["мало", "норм", "много"]
-
-        if text not in allowed:
-            if lang == "uz":
-                txt = "Assortiment: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
-            else:
-                txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
-            await message.reply(txt, reply_markup=kb_level(lang))
-            return
-
-        state["assortment"] = text
-
-        # значения, которые ввёл пользователь (могут быть RU или UZ)
-        market = state["market"]
-        ostatki = state["ostatki"]
-        incoming = state["incoming"]
-        bread = state["bread"]
-        lepeshki = state["lepeshki"]
-        patyr = state["patyr"]
-        assortment = state["assortment"]
-        photo_file_id = state["photo_file_id"]
-
-        # === Маппинг в РУССКИЕ значения для отчёта и БД ===
-        def map_yesno_ru_from_ostatki(v: str) -> str:
-            v_lower = v.lower()
-            if v_lower in ("да", "ha"):
-                return "Да"
-            if v_lower in ("нет", "yoq"):
-                return "Нет"
-            return v
-
-        def map_yesno_ru(v: str) -> str:
-            v_lower = v.lower()
-            if v_lower in ("да", "ha"):
-                return "Да"
-            if v_lower in ("нет", "yo'q", "yoq"):
-                return "Нет"
-            return v
-
-        def map_level_ru(v: str) -> str:
-            v_lower = v.lower()
-            if v_lower in ("мало", "kam"):
-                return "мало"
-            if v_lower in ("норм", "yetarli"):
-                return "норм"
-            if v_lower in ("много", "ko'p"):
-                return "много"
-            return v
-
-        ru_ostatki = map_yesno_ru_from_ostatki(ostatki)
-        ru_incoming = map_yesno_ru(incoming)
-        ru_bread = map_level_ru(bread)
-        ru_lepeshki = map_level_ru(lepeshki)
-        ru_patyr = map_level_ru(patyr)
-        ru_assortment = map_level_ru(assortment)
-
-        # русский текст отчёта (для группы и БД)
-        raw_text = (
-            f"#Магазин: {market}\n"
-            f"Остатки проверил?: {ru_ostatki}\n"
-            f"Приход был?: {ru_incoming}\n"
-            f"Буханка: {ru_bread}\n"
-            f"Лепешки: {ru_lepeshki}\n"
-            f"Патыр: {ru_patyr}\n"
-            f"Ассортимент: {ru_assortment}"
-        )
-
-        # сохраняем в БД русские значения
-        save_report(
-            user=message.from_user,
-            market=market,
-            photo_file_id=photo_file_id,
-            ostatki=ru_ostatki,
-            incoming=ru_incoming,
-            bread=ru_bread,
-            lepeshki=ru_lepeshki,
-            patyr=ru_patyr,
-            assortment=ru_assortment,
-            raw_text=raw_text,
-        )
-
-        user_states.pop(user_id, None)
-        rm = ReplyKeyboardRemove()
-
-        # отправляем отчёт в рабочую группу (только на русском)
-        if TARGET_GROUP_ID:
-            try:
-                await bot.send_photo(TARGET_GROUP_ID, photo_file_id, caption=raw_text)
-            except Exception as e:
-                logging.error(f"Ошибка отправки фото в группу {TARGET_GROUP_ID}: {e}")
-
-        if lang == "uz":
-            txt = "Hisobot saqlandi va ishchi guruhga yuborildi ✅"
-        else:
-            txt = "Отчёт сохранён и отправлен в рабочую группу ✅"
-
-        await message.reply(txt, reply_markup=rm)
-        return
-
-
-@dp.message_handler(content_types=types.ContentType.TEXT)
-async def debug_text(message: types.Message):
-    # В группах не отвечаем обычным пользователям вообще
-    if message.chat.type != "private" and not is_admin(message.from_user):
-        return
-
-    logging.info(
-        f"[TEXT] user_id={message.from_user.id}, chat_type={message.chat.type}, text={message.text}"
-    )
-
-
-if __name__ == "__main__":
-    logging.info(
-        "Бот запускается (SQLite, RU/UZ, админы по user_id, роли админ/суперадмин)..."
-    )
-    executor.start_polling(dp, skip_updates=True)
+            txt = "Лепешки: <b>мало</b> /
