@@ -333,30 +333,39 @@ async def cmd_status(message: types.Message):
     )
     rows = c.fetchall()
 
+    # market -> (ostatki, incoming, bread, lepeshki, patyr, assortment)
     last_by_market = {}
     for market, ostatki, incoming, bread, lepeshki, patyr, assortment, _id in rows:
         last_by_market[market] = (ostatki, incoming, bread, lepeshki, patyr, assortment)
 
-    done = []
-    not_done = []
+    done_rows = []   # список строк для тех, кто сдал
+    not_done = []    # список строк для тех, кто не сдал
 
     for m in MARKETS:
-        code = m.replace("Маркет", "").strip()
+        code = m.replace("Маркет", "").strip()  # оставляем только C-16 / M-53 и т.п.
         if m in last_by_market:
             ost, inc, br, le, pa, ass = last_by_market[m]
-            line = (
-                f"✅ {code} | Ост: {ost} | Прх: {inc} | "
-                f"Б: {br} | Л: {le} | П: {pa} | Ас: {ass}"
-            )
-            done.append(line)
+            done_rows.append((code, ost, inc, br, le, pa, ass))
         else:
             not_done.append(f"❌ {code}")
 
     text = "Статус отчётов на сегодня (UTC+5):\n\n"
 
-    if done:
-        text += "Код | Ост | Прх | Б | Л | П | Ас\n"
-        text += "\n".join(done) + "\n\n"
+    if done_rows:
+        # Формируем ровный столбец в <pre>, чтобы всё было выровнено
+        text += "<pre>"
+        for code, ost, inc, br, le, pa, ass in done_rows:
+            line = (
+                f"{code:<6} "          # код магазина
+                f"Ост:{ost:<4} "
+                f"Прх:{inc:<4} "
+                f"Б:{br:<5} "
+                f"Л:{le:<5} "
+                f"П:{pa:<5} "
+                f"Ас:{ass:<5}"
+            )
+            text += f"✅ {line}\n"
+        text += "</pre>\n\n"
     else:
         text += "Пока никто не отправил отчёт.\n\n"
 
@@ -364,7 +373,6 @@ async def cmd_status(message: types.Message):
         text += "Ещё НЕ отправили:\n" + "\n".join(not_done)
 
     await message.answer(text)
-
 
 @dp.message_handler(commands=["report"])
 async def cmd_report(message: types.Message):
