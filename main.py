@@ -20,12 +20,20 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
-# ===== АДМИНЫ (username без @) =====
-ADMIN_USERNAMES = {"yusubovk", "DSharafeev_TVD", "Nozimbek744"}
+# ===== АДМИНЫ =====
+# Обычные админы (могут status, photos_today)
+ADMIN_USERNAMES = {"Nozimbek744"}
+
+# Суперадмины (могут reset, export + всё, что обычные админы)
+SUPER_ADMIN_USERNAMES = {"yusubovk"}
 
 
 def is_admin(user: types.User) -> bool:
     return bool(user.username and user.username.lower() in ADMIN_USERNAMES)
+
+
+def is_super_admin(user: types.User) -> bool:
+    return bool(user.username and user.username.lower() in SUPER_ADMIN_USERNAMES)
 
 
 # ===== СПИСОК МАРКЕТОВ (ТОЛЬКО НУЖНЫЕ) =====
@@ -285,7 +293,8 @@ async def set_language(message: types.Message):
 
 @dp.message_handler(commands=["reset"])
 async def cmd_reset(message: types.Message):
-    if not is_admin(message.from_user):
+    # ❗Только супер-админ
+    if not is_super_admin(message.from_user):
         await message.reply("У вас нет прав для этой команды.")
         return
 
@@ -341,7 +350,8 @@ async def cmd_status(message: types.Message):
 
 @dp.message_handler(commands=["export"])
 async def cmd_export(message: types.Message):
-    if not is_admin(message.from_user):
+    # ❗Только супер-админ
+    if not is_super_admin(message.from_user):
         await message.reply("У вас нет прав для этой команды.")
         return
 
@@ -400,6 +410,7 @@ async def cmd_export(message: types.Message):
 
 @dp.message_handler(commands=["photos_today"])
 async def cmd_photos_today(message: types.Message):
+    # Обычные админы + супер-админы
     if not is_admin(message.from_user):
         await message.reply("У вас нет прав для этой команды.")
         return
@@ -800,6 +811,6 @@ async def debug_text(message: types.Message):
 
 if __name__ == "__main__":
     logging.info(
-        "Бот запускается (SQLite, RU/UZ, язык в БД, ограниченный список маркетов, в группах — только админ-команды)..."
+        "Бот запускается (SQLite, RU/UZ, язык в БД, ограниченный список маркетов, роли админ/суперадмин)..."
     )
     executor.start_polling(dp, skip_updates=True)
