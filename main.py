@@ -14,7 +14,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
-TARGET_GROUP_ID = -1001234567890  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
+TARGET_GROUP_ID = -1003203445630  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
 # 🔗 URL PostgreSQL (Neon). Можно взять из Railway/Neon.
 # Сначала пробуем переменную окружения, если вдруг заработает.
