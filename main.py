@@ -20,20 +20,27 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
-# ===== АДМИНЫ =====
+# ===== АДМИНЫ ПО ID =====
 # Обычные админы (могут status, photos_today)
-ADMIN_USERNAMES = {"yusubovk","Nozimbek744"}
+ADMIN_IDS = {
+    7299148874,
+    44405876,   # <<< сюда поставь свой Telegram ID
+}
 
-# Суперадмины (могут reset, export + всё, что обычные админы)
-SUPER_ADMIN_USERNAMES = {"yusubovk"}
+# Суперадмины (reset, export + всё, что у обычных админов)
+SUPER_ADMIN_IDS = {
+    7299148874,  # <<< сюда тоже свой ID (может быть тот же, что и выше)
+}
 
 
 def is_admin(user: types.User) -> bool:
-    return bool(user.username and user.username.lower() in ADMIN_USERNAMES)
+    """Обычный админ (по id)."""
+    return user.id in ADMIN_IDS or user.id in SUPER_ADMIN_IDS
 
 
 def is_super_admin(user: types.User) -> bool:
-    return bool(user.username and user.username.lower() in SUPER_ADMIN_USERNAMES)
+    """Суперадмин (по id)."""
+    return user.id in SUPER_ADMIN_IDS
 
 
 # ===== СПИСОК МАРКЕТОВ (ТОЛЬКО НУЖНЫЕ) =====
@@ -811,6 +818,6 @@ async def debug_text(message: types.Message):
 
 if __name__ == "__main__":
     logging.info(
-        "Бот запускается (SQLite, RU/UZ, язык в БД, ограниченный список маркетов, роли админ/суперадмин)..."
+        "Бот запускается (SQLite, RU/UZ, админы по user_id, роли админ/суперадмин)..."
     )
     executor.start_polling(dp, skip_updates=True)
