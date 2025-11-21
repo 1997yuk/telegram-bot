@@ -22,7 +22,7 @@ dp = Dispatcher(bot)
 
 # ===== АДМИНЫ =====
 # Обычные админы (могут status, photos_today)
-ADMIN_USERNAMES = {"Nozimbek744"}
+ADMIN_USERNAMES = {"yusubovk","Nozimbek744"}
 
 # Суперадмины (могут reset, export + всё, что обычные админы)
 SUPER_ADMIN_USERNAMES = {"yusubovk"}
