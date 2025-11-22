@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 import logging
-import os
+import sqlite3
 import io
 import csv
 from collections import defaultdict
 
-import psycopg2
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
@@ -14,13 +13,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
-TARGET_GROUP_ID = -1003247828545  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
-
-# 🔗 URL PostgreSQL из переменной окружения
-DATABASE_URL = "postgresql://neondb_owner:npg_LA2lJSMwx6yt@ep-dry-queen-aduf06vl-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL не задан. Добавь переменную окружения с URL Postgres.")
+TARGET_GROUP_ID = -1003203445630  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
 
 logging.basicConfig(level=logging.INFO)
 
@@ -28,12 +21,13 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ ПО ID =====
-# Обычные админы (могут /status и /photos_today)
+# Обычные админы (могут status, photos_today, report)
 ADMIN_IDS = {
-    7299148874,  # <<< сюда поставь свой Telegram ID (и других админов через запятую)
+    7299148874,
+    44405876, # <<< сюда поставь свой Telegram ID и других админов через запятую
 }
 
-# Суперадмины (могут /reset и /export + всё, что обычные админы)
+# Суперадмины (reset, export + всё, что у обычных админов)
 SUPER_ADMIN_IDS = {
     7299148874,  # <<< сюда тоже свой ID (может быть тот же, что и выше)
 }
@@ -78,17 +72,17 @@ for m in MARKETS:
 
 MARKET_GROUP_CODES = sorted(MARKET_GROUPS.keys())
 
-# ===== ПОДКЛЮЧЕНИЕ К POSTGRES =====
-conn = psycopg2.connect(DATABASE_URL)
-conn.autocommit = True
+# ===== БАЗА ДАННЫХ (SQLite) =====
+DB_PATH = "reports.db"
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
 # таблица отчётов
 cur.execute(
     """
     CREATE TABLE IF NOT EXISTS reports (
-        id SERIAL PRIMARY KEY,
-        user_id BIGINT,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
         username TEXT,
         full_name TEXT,
         market TEXT,
@@ -100,22 +94,36 @@ cur.execute(
         assortment TEXT,
         raw_text TEXT,
         photo_file_id TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """
 )
+conn.commit()
 
 # таблица языков пользователей
 cur.execute(
     """
     CREATE TABLE IF NOT EXISTS user_lang (
-        user_id BIGINT PRIMARY KEY,
+        user_id INTEGER PRIMARY KEY,
         lang TEXT
     )
     """
 )
+conn.commit()
 
-logging.info("PostgreSQL база данных и таблицы готовы")
+# Добавляем поля, если таблица reports была старой
+cur.execute("PRAGMA table_info(reports)")
+cols = [row[1] for row in cur.fetchall()]
+if "ostatki" not in cols:
+    cur.execute("ALTER TABLE reports ADD COLUMN ostatki TEXT")
+    conn.commit()
+    logging.info("Добавлена колонка ostatki в таблицу reports")
+if "incoming" not in cols:
+    cur.execute("ALTER TABLE reports ADD COLUMN incoming TEXT")
+    conn.commit()
+    logging.info("Добавлена колонка incoming в таблицу reports")
+
+logging.info("База данных и таблицы (SQLite) готовы")
 
 # ===== КЭШ ЯЗЫКА В ПАМЯТИ =====
 USER_LANG = {}  # user_id -> 'ru' / 'uz'
@@ -130,11 +138,12 @@ def set_lang(user_id: int, lang: str):
     c.execute(
         """
         INSERT INTO user_lang (user_id, lang)
-        VALUES (%s, %s)
-        ON CONFLICT (user_id) DO UPDATE SET lang = EXCLUDED.lang
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET lang = excluded.lang
         """,
         (user_id, lang),
     )
+    conn.commit()
 
 
 def get_lang(user_id: int) -> str:
@@ -142,7 +151,7 @@ def get_lang(user_id: int) -> str:
     if user_id in USER_LANG:
         return USER_LANG[user_id]
     c = conn.cursor()
-    c.execute("SELECT lang FROM user_lang WHERE user_id = %s", (user_id,))
+    c.execute("SELECT lang FROM user_lang WHERE user_id = ?", (user_id,))
     row = c.fetchone()
     if row and row[0] in ("ru", "uz"):
         USER_LANG[user_id] = row[0]
@@ -169,7 +178,7 @@ def save_report(
         (user_id, username, full_name, market,
          ostatki, incoming, bread, lepeshki, patyr, assortment,
          raw_text, photo_file_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user.id,
@@ -186,6 +195,7 @@ def save_report(
             photo_file_id,
         ),
     )
+    conn.commit()
     logging.info(f"Сохранён отчёт: {market}, user_id={user.id}")
 
 
@@ -250,9 +260,7 @@ def kb_level(lang: str):
 # ===== КОМАНДЫ =====
 @dp.message_handler(commands=["start", "help"])
 async def cmd_start(message: types.Message):
-    # В ГРУППЕ:
-    # - если НЕ админ — полностью игнорируем /start и /help
-    # - если админ — даём подсказку, что бот работает в личке
+    # В ГРУППЕ: обычных пользователей игнорируем, админам говорим, что бот работает в личке
     if message.chat.type != "private":
         if not is_admin(message.from_user):
             return
@@ -262,7 +270,7 @@ async def cmd_start(message: types.Message):
         )
         return
 
-    # В ЛИЧКЕ: обычный выбор языка
+    # В ЛИЧКЕ: выбор языка
     text = "Выберите язык / Tilni tanlang:\n\nРусский 🇷🇺 / O‘zbekcha 🇺🇿"
     await message.reply(text, reply_markup=kb_lang())
 
@@ -296,14 +304,13 @@ async def cmd_reset(message: types.Message):
         return
 
     c = conn.cursor()
-    # фильтр по сегодняшнему дню в UTC+5
     c.execute(
         """
         DELETE FROM reports
-        WHERE DATE( (created_at AT TIME ZONE 'UTC') + INTERVAL '5 hours' )
-              = DATE( (NOW() AT TIME ZONE 'UTC') + INTERVAL '5 hours' )
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
         """
     )
+    conn.commit()
     await message.answer("Все отчёты за сегодня удалены. Можно собирать заново.")
 
 
@@ -315,29 +322,41 @@ async def cmd_status(message: types.Message):
         return
 
     c = conn.cursor()
+    # Берём все отчёты за сегодня и по каждому маркету оставляем последний (по id)
     c.execute(
         """
-        SELECT DISTINCT market
+        SELECT market, ostatki, incoming, bread, lepeshki, patyr, assortment, id
         FROM reports
-        WHERE DATE( (created_at AT TIME ZONE 'UTC') + INTERVAL '5 hours' )
-              = DATE( (NOW() AT TIME ZONE 'UTC') + INTERVAL '5 hours' )
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        ORDER BY id
         """
     )
     rows = c.fetchall()
-    reported = {r[0] for r in rows}
+
+    last_by_market = {}
+    for market, ostatki, incoming, bread, lepeshki, patyr, assortment, _id in rows:
+        last_by_market[market] = (ostatki, incoming, bread, lepeshki, patyr, assortment)
 
     done = []
     not_done = []
 
     for m in MARKETS:
-        if m in reported:
-            done.append(f"✅ {m}")
+        code = m.replace("Маркет", "").strip()
+        if m in last_by_market:
+            ost, inc, br, le, pa, ass = last_by_market[m]
+            line = (
+                f"✅ {code} | Ост: {ost} | Прх: {inc} | "
+                f"Б: {br} | Л: {le} | П: {pa} | Ас: {ass}"
+            )
+            done.append(line)
         else:
-            not_done.append(f"❌ {m}")
+            not_done.append(f"❌ {code}")
 
     text = "Статус отчётов на сегодня (UTC+5):\n\n"
+
     if done:
-        text += "Отправили отчёт:\n" + "\n".join(done) + "\n\n"
+        text += "Код | Ост | Прх | Б | Л | П | Ас\n"
+        text += "\n".join(done) + "\n\n"
     else:
         text += "Пока никто не отправил отчёт.\n\n"
 
@@ -345,6 +364,64 @@ async def cmd_status(message: types.Message):
         text += "Ещё НЕ отправили:\n" + "\n".join(not_done)
 
     await message.answer(text)
+
+
+@dp.message_handler(commands=["report"])
+async def cmd_report(message: types.Message):
+    """
+    /report Маркет М-53
+    Показывает последний отчёт за сегодня по указанному маркету.
+    """
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    args = message.get_args().strip()
+    if not args:
+        await message.reply(
+            "Укажите магазин, например:\n"
+            "<code>/report Маркет М-53</code>"
+        )
+        return
+
+    if args not in MARKETS:
+        await message.reply(
+            "Не нашёл такой магазин.\n"
+            "Напишите точно как в списке, например:\n"
+            "<code>/report Маркет М-53</code>"
+        )
+        return
+
+    market = args
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT
+            id,
+            datetime(created_at, '+5 hours') AS created_at_uz,
+            raw_text,
+            photo_file_id
+        FROM reports
+        WHERE market = ?
+          AND date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (market,),
+    )
+    row = c.fetchone()
+
+    if not row:
+        await message.reply("Сегодня по этому маркету ещё нет отчёта.")
+        return
+
+    _id, created_at_uz, raw_text, photo_file_id = row
+    caption = f"{raw_text}\n\nВремя (UTC+5): {created_at_uz}"
+
+    if photo_file_id:
+        await message.reply_photo(photo_file_id, caption=caption)
+    else:
+        await message.reply(caption)
 
 
 @dp.message_handler(commands=["export"])
@@ -359,7 +436,7 @@ async def cmd_export(message: types.Message):
         """
         SELECT
             id,
-            (created_at AT TIME ZONE 'UTC' + INTERVAL '5 hours') AS created_at_uz,
+            datetime(created_at, '+5 hours') AS created_at_uz,
             market,
             ostatki,
             incoming,
@@ -371,7 +448,7 @@ async def cmd_export(message: types.Message):
             username,
             full_name
         FROM reports
-        ORDER BY created_at ASC
+        ORDER BY datetime(created_at) ASC
         """
     )
     rows = c.fetchall()
@@ -437,18 +514,17 @@ async def cmd_photos_today(message: types.Message):
         SELECT
             market,
             photo_file_id,
-            (created_at AT TIME ZONE 'UTC' + INTERVAL '5 hours') AS created_at_uz
+            datetime(created_at, '+5 hours') AS created_at_uz
         FROM reports
-        WHERE DATE( (created_at AT TIME ZONE 'UTC') + INTERVAL '5 hours' )
-              = DATE( (NOW() AT TIME ZONE 'UTC') + INTERVAL '5 hours' )
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
           AND photo_file_id IS NOT NULL
     """
     params = []
     if market_filter:
-        base_sql += " AND market = %s"
+        base_sql += " AND market = ?"
         params.append(market_filter)
 
-    base_sql += " ORDER BY created_at ASC"
+    base_sql += " ORDER BY datetime(created_at) ASC"
 
     c.execute(base_sql, params)
     rows = c.fetchall()
@@ -470,7 +546,8 @@ async def cmd_photos_today(message: types.Message):
         )
 
     for market, file_id, created_at_uz in rows:
-        caption = f"{market}\n{created_at_uz}"
+        code = market.replace("Маркет", "").strip()
+        caption = f"{code}\n{created_at_uz}"
         try:
             await message.reply_photo(file_id, caption=caption)
         except Exception as e:
@@ -677,7 +754,7 @@ async def handle_steps(message: types.Message):
             allowed = ["мало", "норм", "много"]
 
         if text not in allowed:
-            if lang == "uz":
+            if lang == "уз":
                 txt = "Patir: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
             else:
                 txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
@@ -710,7 +787,6 @@ async def handle_steps(message: types.Message):
 
         state["assortment"] = text
 
-        # значения, которые ввёл пользователь (могут быть RU или UZ)
         market = state["market"]
         ostatki = state["ostatki"]
         incoming = state["incoming"]
@@ -720,7 +796,7 @@ async def handle_steps(message: types.Message):
         assortment = state["assortment"]
         photo_file_id = state["photo_file_id"]
 
-        # === Маппинг в РУССКИЕ значения для отчёта и БД ===
+        # маппинг ответов в русские значения
         def map_yesno_ru_from_ostatki(v: str) -> str:
             v_lower = v.lower()
             if v_lower in ("да", "ha"):
@@ -754,9 +830,10 @@ async def handle_steps(message: types.Message):
         ru_patyr = map_level_ru(patyr)
         ru_assortment = map_level_ru(assortment)
 
-        # русский текст отчёта (для группы и БД)
+        market_code = market.replace("Маркет", "").strip()
+
         raw_text = (
-            f"#Магазин: {market}\n"
+            f"#Магазин: {market_code}\n"
             f"Остатки проверил?: {ru_ostatki}\n"
             f"Приход был?: {ru_incoming}\n"
             f"Буханка: {ru_bread}\n"
@@ -765,10 +842,9 @@ async def handle_steps(message: types.Message):
             f"Ассортимент: {ru_assortment}"
         )
 
-        # сохраняем в БД русские значения
         save_report(
             user=message.from_user,
-            market=market,
+            market=market,  # в базе оставляем полное название "Маркет С-16"
             photo_file_id=photo_file_id,
             ostatki=ru_ostatki,
             incoming=ru_incoming,
@@ -782,7 +858,7 @@ async def handle_steps(message: types.Message):
         user_states.pop(user_id, None)
         rm = ReplyKeyboardRemove()
 
-        # отправляем отчёт в рабочую группу (только на русском)
+        # отправляем отчёт в рабочую группу (только на русском, с кодом магазина)
         if TARGET_GROUP_ID:
             try:
                 await bot.send_photo(TARGET_GROUP_ID, photo_file_id, caption=raw_text)
@@ -811,6 +887,6 @@ async def debug_text(message: types.Message):
 
 if __name__ == "__main__":
     logging.info(
-        "Бот запускается (PostgreSQL, RU/UZ, админы по user_id, роли админ/суперадмин)..."
+        "Бот запускается (SQLite, RU/UZ, админы по user_id, роли админ/суперадмин)..."
     )
     executor.start_polling(dp, skip_updates=True)
