@@ -21,10 +21,10 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
 # ===== АДМИНЫ ПО ID =====
-# Обычные админы (могут status, photos_today, report)
+# Обычные админы (могут status, photos_today, report, report_store, report_day)
 ADMIN_IDS = {
-    7299148874,
-    44405876, # <<< сюда поставь свой Telegram ID и других админов через запятую
+    44405876,
+    7299148874, # <<< сюда поставь свой Telegram ID и других админов через запятую
 }
 
 # Суперадмины (reset, export + всё, что у обычных админов)
@@ -199,6 +199,125 @@ def save_report(
     logging.info(f"Сохранён отчёт: {market}, user_id={user.id}")
 
 
+# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОТЧЁТОВ ПО ДАТЕ =====
+def build_text_report_for_date(date_str):
+    """
+    Строит текстовый сводный отчёт за указанный день.
+    date_str = None  -> сегодня (UTC+5)
+    date_str = 'YYYY-MM-DD' -> конкретная дата (UTC+5)
+    """
+    c = conn.cursor()
+
+    if date_str is None:
+        # сегодня
+        date_label = "сегодня (UTC+5)"
+        c.execute(
+            """
+            SELECT market, ostatki, incoming, bread, lepeshki, patyr, assortment, id
+            FROM reports
+            WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+            ORDER BY id
+            """
+        )
+    else:
+        date_label = f"{date_str} (UTC+5)"
+        c.execute(
+            """
+            SELECT market, ostatki, incoming, bread, lepeshki, patyr, assortment, id
+            FROM reports
+            WHERE date(datetime(created_at, '+5 hours')) = ?
+            ORDER BY id
+            """,
+            (date_str,),
+        )
+
+    rows = c.fetchall()
+
+    # market -> (ostatki, incoming, bread, lepeshki, patyr, assortment)
+    last_by_market = {}
+    for market, ostatki, incoming, bread, lepeshki, patyr, assortment, _id in rows:
+        last_by_market[market] = (ostatki, incoming, bread, lepeshki, patyr, assortment)
+
+    done_rows = []
+    for m in MARKETS:
+        if m in last_by_market:
+            code = m.replace("Маркет", "").strip()
+            ost, inc, br, le, pa, ass = last_by_market[m]
+            done_rows.append((code, ost, inc, br, le, pa, ass))
+
+    if not done_rows:
+        return f"За {date_label} отчётов по магазинам нет."
+
+    text = f"Отчёт за {date_label}:\n\n<pre>"
+    for code, ost, inc, br, le, pa, ass in done_rows:
+        line = (
+            f"{code:<6} "
+            f"Ост:{ost:<4} "
+            f"Прх:{inc:<4} "
+            f"Б:{br:<5} "
+            f"Л:{le:<5} "
+            f"П:{pa:<5} "
+            f"Ас:{ass:<5}"
+        )
+        text += f"{line}\n"
+    text += "</pre>"
+
+    return text
+
+
+def get_last_reports_for_date(date_str):
+    """
+    Возвращает список последних отчётов по каждому магазину за день:
+    [(market, raw_text, photo_file_id, created_at_uz), ...]
+    """
+    c = conn.cursor()
+
+    if date_str is None:
+        c.execute(
+            """
+            SELECT
+                market,
+                raw_text,
+                photo_file_id,
+                datetime(created_at, '+5 hours') AS created_at_uz,
+                id
+            FROM reports
+            WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+            ORDER BY id
+            """
+        )
+    else:
+        c.execute(
+            """
+            SELECT
+                market,
+                raw_text,
+                photo_file_id,
+                datetime(created_at, '+5 hours') AS created_at_uz,
+                id
+            FROM reports
+            WHERE date(datetime(created_at, '+5 hours')) = ?
+            ORDER BY id
+            """,
+            (date_str,),
+        )
+
+    rows = c.fetchall()
+
+    # Оставляем по одному последнему отчёту на каждый магазин
+    last_by_market = {}
+    for market, raw_text, photo_file_id, created_at_uz, _id in rows:
+        last_by_market[market] = (raw_text, photo_file_id, created_at_uz)
+
+    result = []
+    for m in MARKETS:
+        if m in last_by_market:
+            raw_text, photo_file_id, created_at_uz = last_by_market[m]
+            result.append((m, raw_text, photo_file_id, created_at_uz))
+
+    return result
+
+
 # ===== СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ =====
 user_states = {}  # step, photo_file_id, market_group, market, ostatki, incoming, bread...
 
@@ -337,26 +456,33 @@ async def cmd_status(message: types.Message):
     for market, ostatki, incoming, bread, lepeshki, patyr, assortment, _id in rows:
         last_by_market[market] = (ostatki, incoming, bread, lepeshki, patyr, assortment)
 
-    done = []
+    done_rows = []
     not_done = []
 
     for m in MARKETS:
         code = m.replace("Маркет", "").strip()
         if m in last_by_market:
             ost, inc, br, le, pa, ass = last_by_market[m]
-            line = (
-                f"✅ {code} | Ост: {ost} | Прх: {inc} | "
-                f"Б: {br} | Л: {le} | П: {pa} | Ас: {ass}"
-            )
-            done.append(line)
+            done_rows.append((code, ost, inc, br, le, pa, ass))
         else:
             not_done.append(f"❌ {code}")
 
     text = "Статус отчётов на сегодня (UTC+5):\n\n"
 
-    if done:
-        text += "Код | Ост | Прх | Б | Л | П | Ас\n"
-        text += "\n".join(done) + "\n\n"
+    if done_rows:
+        text += "<pre>"
+        for code, ost, inc, br, le, pa, ass in done_rows:
+            line = (
+                f"{code:<6} "
+                f"Ост:{ost:<4} "
+                f"Прх:{inc:<4} "
+                f"Б:{br:<5} "
+                f"Л:{le:<5} "
+                f"П:{pa:<5} "
+                f"Ас:{ass:<5}"
+            )
+            text += f"✅ {line}\n"
+        text += "</pre>\n\n"
     else:
         text += "Пока никто не отправил отчёт.\n\n"
 
@@ -369,8 +495,51 @@ async def cmd_status(message: types.Message):
 @dp.message_handler(commands=["report"])
 async def cmd_report(message: types.Message):
     """
-    /report Маркет М-53
-    Показывает последний отчёт за сегодня по указанному маркету.
+    /report  -> текстовый + фото отчёт за СЕГОДНЯ по всем магазинам.
+    (для конкретного магазина: /report_store,
+     для другой даты: /report_day YYYY-MM-DD)
+    """
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    args = message.get_args().strip()
+    if args:
+        await message.reply(
+            "Для отчёта по конкретному магазину используйте:\n"
+            "<code>/report_store Маркет М-53</code>\n\n"
+            "Для отчёта за конкретный день:\n"
+            "<code>/report_day 2025-11-21</code>"
+        )
+        return
+
+    # 1) текстовая сводка за сегодня
+    text = build_text_report_for_date(None)  # сегодня
+    await message.reply(text)
+
+    # 2) фото-отчёты за сегодня (последний отчёт по каждому магазину)
+    reports = get_last_reports_for_date(None)
+    if not reports:
+        return
+
+    await message.reply("Фото-отчёты за сегодня по магазинам:")
+
+    for market, raw_text, photo_file_id, created_at_uz in reports:
+        if photo_file_id:
+            try:
+                await message.reply_photo(photo_file_id, caption=raw_text)
+            except Exception as e:
+                logging.error(f"Ошибка отправки фото в /report: {e}")
+                await message.reply(raw_text)
+        else:
+            await message.reply(raw_text)
+
+
+@dp.message_handler(commands=["report_store"])
+async def cmd_report_store(message: types.Message):
+    """
+    /report_store Маркет М-53
+    Показывает последний отчёт за сегодня по указанному магазину (фото + текст).
     """
     if not is_admin(message.from_user):
         await message.reply("У вас нет прав для этой команды.")
@@ -380,7 +549,7 @@ async def cmd_report(message: types.Message):
     if not args:
         await message.reply(
             "Укажите магазин, например:\n"
-            "<code>/report Маркет М-53</code>"
+            "<code>/report_store Маркет М-53</code>"
         )
         return
 
@@ -388,7 +557,7 @@ async def cmd_report(message: types.Message):
         await message.reply(
             "Не нашёл такой магазин.\n"
             "Напишите точно как в списке, например:\n"
-            "<code>/report Маркет М-53</code>"
+            "<code>/report_store Маркет М-53</code>"
         )
         return
 
@@ -412,7 +581,7 @@ async def cmd_report(message: types.Message):
     row = c.fetchone()
 
     if not row:
-        await message.reply("Сегодня по этому маркету ещё нет отчёта.")
+        await message.reply("Сегодня по этому магазину ещё нет отчёта.")
         return
 
     _id, created_at_uz, raw_text, photo_file_id = row
@@ -422,6 +591,48 @@ async def cmd_report(message: types.Message):
         await message.reply_photo(photo_file_id, caption=caption)
     else:
         await message.reply(caption)
+
+
+@dp.message_handler(commands=["report_day"])
+async def cmd_report_day(message: types.Message):
+    """
+    /report_day YYYY-MM-DD
+    Текстовый + фото отчёт за выбранный день по всем магазинам.
+    """
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    args = message.get_args().strip()
+    if not args:
+        await message.reply(
+            "Укажите дату в формате YYYY-MM-DD, например:\n"
+            "<code>/report_day 2025-11-21</code>"
+        )
+        return
+
+    date_str = args
+
+    # 1) текстовая сводка за день
+    text = build_text_report_for_date(date_str)
+    await message.reply(text)
+
+    # 2) фото-отчёты за выбранный день
+    reports = get_last_reports_for_date(date_str)
+    if not reports:
+        return
+
+    await message.reply(f"Фото-отчёты за {date_str}:")
+
+    for market, raw_text, photo_file_id, created_at_uz in reports:
+        if photo_file_id:
+            try:
+                await message.reply_photo(photo_file_id, caption=raw_text)
+            except Exception as e:
+                logging.error(f"Ошибка отправки фото в /report_day: {e}")
+                await message.reply(raw_text)
+        else:
+            await message.reply(raw_text)
 
 
 @dp.message_handler(commands=["export"])
@@ -479,7 +690,7 @@ async def cmd_export(message: types.Message):
 
     data = output.getvalue().encode("utf-8-sig")
     buf = io.BytesIO(data)
-    buf.name = "reports.csv"
+    buf.name = "reports_all.csv"
 
     await message.reply_document(buf, caption="Выгрузка всех отчётов из базы.")
 
@@ -754,7 +965,7 @@ async def handle_steps(message: types.Message):
             allowed = ["мало", "норм", "много"]
 
         if text not in allowed:
-            if lang == "уз":
+            if lang == "uz":
                 txt = "Patir: <b>kam</b> / <b>yetarli</b> / <b>ko'p</b> dan birini tanlang."
             else:
                 txt = "Выберите: <b>мало</b> / <b>норм</b> / <b>много</b>."
