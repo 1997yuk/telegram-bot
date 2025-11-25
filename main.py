@@ -1045,8 +1045,23 @@ async def handle_steps(message: types.Message):
 
         market_code = market.replace("Маркет", "").strip()
 
+        # формируем строку с отправителем
+        u = message.from_user
+        uname = u.username
+        fname = u.full_name
+
+        if uname and fname:
+            sender_line = f"Отправил: @{uname} ({fname})"
+        elif uname:
+            sender_line = f"Отправил: @{uname}"
+        elif fname:
+            sender_line = f"Отправил: {fname}"
+        else:
+            sender_line = "Отправил: (неизвестно)"
+
         raw_text = (
             f"#Магазин: {market_code}\n"
+            f"{sender_line}\n"
             f"Остатки проверил?: {ru_ostatki}\n"
             f"Приход был?: {ru_incoming}\n"
             f"Буханка: {ru_bread}\n"
