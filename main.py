@@ -24,7 +24,8 @@ dp = Dispatcher(bot)
 # Обычные админы (могут status, photos_today, report, report_store, report_day)
 ADMIN_IDS = {
     44405876,
-    7299148874, # <<< сюда поставь свой Telegram ID и других админов через запятую
+    7299148874,
+     6346971455, # <<< сюда поставь свой Telegram ID и других админов через запятую
 }
 
 # Суперадмины (reset, export + всё, что у обычных админов)
