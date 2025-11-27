@@ -419,6 +419,69 @@ async def cmd_start(message: types.Message):
     text = "Выберите язык / Tilni tanlang:\n\nРусский 🇷🇺 / O‘zbekcha 🇺🇿"
     await message.reply(text, reply_markup=kb_lang())
 
+@dp.message_handler(commands=["not_sent"])
+async def cmd_not_sent(message: types.Message):
+    """
+    /not_sent — показать только те маркеты, которые НЕ отправили отчёт за сегодня.
+    Сначала по территориальным менеджерам (если TERRITORIAL_MANAGERS заполнен),
+    затем — магазины без привязки к ТМ.
+    """
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    c = conn.cursor()
+    # Берём все отчёты за сегодня и по каждому маркету оставляем последний (по id)
+    c.execute(
+        """
+        SELECT market, id
+        FROM reports
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        ORDER BY id
+        """
+    )
+    rows = c.fetchall()
+
+    last_by_market = {}
+    for market, _id in rows:
+        last_by_market[market] = _id
+
+    lines = []
+
+    # --- 1) Группы по территориальным менеджерам ---
+    markets_in_tm = set()
+    for tm_key, info in TERRITORIAL_MANAGERS.items():
+        title = info["title"]
+        tm_markets = info["markets"]
+        markets_in_tm.update(tm_markets)
+
+        tm_not_sent = []
+        for m in tm_markets:
+            if m not in last_by_market:
+                code = m.replace("Маркет", "").strip()
+                tm_not_sent.append(f"❌ {code}")
+
+        if tm_not_sent:
+            block = f"{title}:\n" + "\n".join(tm_not_sent)
+            lines.append(block)
+
+    # --- 2) Магазины, которые не попали ни в одного ТМ, но есть в MARKETS ---
+    other_not_sent = []
+    for m in MARKETS:
+        if m not in markets_in_tm and m not in last_by_market:
+            code = m.replace("Маркет", "").strip()
+            other_not_sent.append(f"❌ {code}")
+
+    if other_not_sent:
+        block = "Без ТМ:\n" + "\n".join(other_not_sent)
+        lines.append(block)
+
+    if not lines:
+        await message.reply("Все маркеты отправили отчёт за сегодня (UTC+5) ✅")
+        return
+
+    text = "МаркетЫ без отчёта за сегодня (UTC+5):\n\n" + "\n\n".join(lines)
+    await message.reply(text)
 
 @dp.message_handler(
     lambda m: m.chat.type == "private"
