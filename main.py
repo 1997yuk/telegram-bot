@@ -1127,6 +1127,96 @@ async def cmd_reset(message: types.Message):
     )
     conn.commit()
     await message.answer("Все отчёты за сегодня удалены. Можно собирать заново.")
+    
+@dp.message_handler(commands=["tm_done"])
+async def cmd_tm_done(message: types.Message):
+    """
+    /tm_done — показать по территориальным менеджерам только те маркеты,
+    которые ОТПРАВИЛИ отчёт за сегодня (UTC+5).
+    Отдельно показываем магазины без привязки к ТМ.
+    """
+    if not is_admin(message.from_user):
+        await message.reply("У вас нет прав для этой команды.")
+        return
+
+    c = conn.cursor()
+    # Берём все отчёты за сегодня, по каждому магазину оставляем последний (по id)
+    c.execute(
+        """
+        SELECT market, username, full_name, datetime(created_at, '+5 hours') AS created_at_uz, id
+        FROM reports
+        WHERE date(datetime(created_at, '+5 hours')) = date('now', '+5 hours')
+        ORDER BY id
+        """
+    )
+    rows = c.fetchall()
+
+    last_by_market = {}
+    for market, username, full_name, created_at_uz, _id in rows:
+        last_by_market[market] = (username, full_name, created_at_uz)
+
+    if not last_by_market:
+        await message.reply("Сегодня ещё никто не отправил отчёт.")
+        return
+
+    lines = []
+
+    # --- 1) Маркеты по территориальным менеджерам ---
+    markets_in_tm = set()
+    for tm_key, info in TERRITORIAL_MANAGERS.items():
+        title = info["title"]
+        tm_markets = info["markets"]
+        markets_in_tm.update(tm_markets)
+
+        tm_done = []
+        for m in tm_markets:
+            if m in last_by_market:
+                username, full_name, created_at_uz = last_by_market[m]
+                code = m.replace("Маркет", "").strip()
+
+                if username and full_name:
+                    sender = f"@{username} ({full_name})"
+                elif username:
+                    sender = f"@{username}"
+                elif full_name:
+                    sender = full_name
+                else:
+                    sender = "неизвестно"
+
+                tm_done.append(f"✅ {code} — {sender}")
+
+        if tm_done:
+            block = f"{title}:\n" + "\n".join(tm_done)
+            lines.append(block)
+
+    # --- 2) Маркеты без ТМ, но с отчётом ---
+    other_done = []
+    for m in MARKETS:
+        if m not in markets_in_tm and m in last_by_market:
+            username, full_name, created_at_uz = last_by_market[m]
+            code = m.replace("Маркет", "").strip()
+
+            if username and full_name:
+                sender = f"@{username} ({full_name})"
+            elif username:
+                sender = f"@{username}"
+            elif full_name:
+                sender = full_name
+            else:
+                sender = "неизвестно"
+
+            other_done.append(f"✅ {code} — {sender}")
+
+    if other_done:
+        block = "Без ТМ:\n" + "\n".join(other_done)
+        lines.append(block)
+
+    if not lines:
+        await message.reply("По ТМ пока нет ни одного отправленного отчёта за сегодня.")
+        return
+
+    text = "Маркеты, отправившие отчёт за сегодня (UTC+5):\n\n" + "\n\n".join(lines)
+    await message.reply(text)
 
 
 @dp.message_handler(commands=["status"])
