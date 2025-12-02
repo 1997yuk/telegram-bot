@@ -1087,7 +1087,7 @@ async def cmd_not_sent(message: types.Message):
         await message.reply("Все маркеты отправили отчёт за сегодня (UTC+5) ✅")
         return
 
-    text = "МаркетЫ без отчёта за сегодня (UTC+5):\n\n" + "\n\n".join(lines)
+    text = "Маркеты без отчёта за сегодня (UTC+5):\n\n" + "\n\n".join(lines)
     await message.reply(text)
 
 @dp.message_handler(
