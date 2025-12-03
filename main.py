@@ -1676,7 +1676,7 @@ async def handle_photo(message: types.Message):
         hour = now_utc5.hour
 
         # принимаем только с 12:00 до 12:59 (UTC+5)
-        if not (12 <= hour < 13):
+        if not (12 <= hour < 14):
             if lang == "uz":
                 txt = (
                     "Foto hisobot faqat soat 12:00 dan 13:00 gacha qabul qilinadi (UTC+5).\n"
