@@ -3,8 +3,9 @@ import logging
 import sqlite3
 import io
 import csv
-from collections import defaultdict
 
+from collections import defaultdict
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import (
@@ -64,7 +65,7 @@ MARKETS_TEXT = """
 Маркет B-09
 Маркет B-10
 Маркет B-11
-Маркет C-25
+Маркет С-25
 Маркет D-01
 Маркет D-02
 Маркет D-03
@@ -1665,9 +1666,33 @@ async def handle_photo(message: types.Message):
         return
 
     user_id = message.from_user.id
+    lang = get_lang(user_id)
+
+    # ⏰ ОГРАНИЧЕНИЕ ВРЕМЕНИ ДЛЯ НЕ-АДМИНОВ: 12:00–13:00 UTC+5
+    if not is_admin(message.from_user):
+        # текущее время в UTC+5
+        now_utc = datetime.utcnow()
+        now_utc5 = now_utc + timedelta(hours=5)
+        hour = now_utc5.hour
+
+        # принимаем только с 12:00 до 12:59 (UTC+5)
+        if not (12 <= hour < 13):
+            if lang == "uz":
+                txt = (
+                    "Foto hisobot faqat soat 12:00 dan 13:00 gacha qabul qilinadi (UTC+5).\n"
+                    "Iltimos, shu vaqt oralig'ida yuboring."
+                )
+            else:
+                txt = (
+                    "Фотоотчёты принимаются только с 12:00 до 13:00 (UTC+5).\n"
+                    "Пожалуйста, отправьте фото в это время."
+                )
+            await message.reply(txt)
+            return
+
+    # если время подходит или это админ — продолжаем обычный сценарий
     photo = message.photo[-1]
     file_id = photo.file_id
-    lang = get_lang(user_id)
 
     logging.info(
         f"[PHOTO] user_id={user_id}, private chat, file_id={file_id}, lang={lang}"
@@ -1692,7 +1717,6 @@ async def handle_photo(message: types.Message):
         text = "Фото получено ✅\nСначала выберите группу маркета (букву):"
 
     await message.reply(text, reply_markup=kb_market_groups())
-
 
 # ===== ОБРАБОТКА ШАГОВ (ЛИЧКА) =====
 @dp.message_handler(
