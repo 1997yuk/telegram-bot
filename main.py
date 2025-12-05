@@ -16,6 +16,35 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 
+MAX_TG_MESSAGE = 4000  # небольшой запас до лимита 4096
+
+
+async def send_long_message(message: types.Message, text: str):
+    """
+    Отправляет длинный текст несколькими сообщениями,
+    чтобы не ловить ошибку MessageIsTooLong.
+    """
+    if len(text) <= MAX_TG_MESSAGE:
+        await message.answer(text)
+        return
+
+    # режем по строкам, чтобы не рвать <pre> и т.п.
+    lines = text.split("\n")
+    chunk = ""
+    for line in lines:
+        # +1 за перенос строки
+        if len(chunk) + len(line) + 1 > MAX_TG_MESSAGE:
+            await message.answer(chunk)
+            chunk = line
+        else:
+            if chunk:
+                chunk += "\n" + line
+            else:
+                chunk = line
+
+    if chunk:
+        await message.answer(chunk)
+
 # 🔐 Токен бота
 API_TOKEN = "8502500500:AAHw3Nvkefvbff27oeuwjdPrF-lXRxboiKQ"
 
@@ -1217,7 +1246,7 @@ async def cmd_tm_done(message: types.Message):
         return
 
     text = "Маркеты, отправившие отчёт за сегодня (UTC+5):\n\n" + "\n\n".join(lines)
-    await message.reply(text)
+    await send_long_message(message, text)
 
 
 @dp.message_handler(commands=["status"])
@@ -1276,7 +1305,8 @@ async def cmd_status(message: types.Message):
     if not_done:
         text += "Ещё НЕ отправили:\n" + "\n".join(not_done)
 
-    await message.answer(text)
+    await send_long_message(message, text)
+
 
 
 @dp.message_handler(commands=["tm_status"])
