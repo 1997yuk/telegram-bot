@@ -1909,6 +1909,9 @@ async def cmd_photos_today(message: types.Message):
 # ===== ОБРАБОТКА ФОТО (ТОЛЬКО ЛИЧКА) =====
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
+
+    print("CHAT ID:", message.chat.id)
+    print("THREAD ID:", message.message_thread_id)
     # если это группа и отправитель не админ — вообще молчим
     if message.chat.type != "private":
         if not is_admin(message.from_user):
