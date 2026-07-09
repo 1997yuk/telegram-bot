@@ -1141,7 +1141,7 @@ TERRITORIAL_MANAGERS = {
         ],
     },
      
-     "tm33": {
+     "tm34": {
         "title": "Юлдашев Олим",
         "markets": [
      "Маркет F-01",
@@ -1154,7 +1154,7 @@ TERRITORIAL_MANAGERS = {
         ],
     },
      
-     "tm33": {
+     "tm35": {
         "title": "Хакимов Сарвар",
         "markets": [
      "Маркет F-06",
@@ -1167,7 +1167,7 @@ TERRITORIAL_MANAGERS = {
         ],
     },
      
-     "tm33": {
+     "tm36": {
         "title": "Абдуалимов Нурмухаммад",
         "markets": [
       "Маркет An-01",
