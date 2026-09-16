@@ -46,7 +46,7 @@ async def send_long_message(message: types.Message, text: str):
         await message.answer(chunk)
 
 # 🔐 Токен бота
-API_TOKEN = "8502500500:AAGQG-NpjcHW2JvV9muHSukFwiCnqN3wrnE"
+API_TOKEN = "8197887868:AAE7UNncm826AdXIALYui07pWzgpSkpWPDA"
 
 # 🔗 ID группы, куда отправляем итоговый отчёт
 TARGET_GROUP_ID = -1003203445630  # <<< ЗАМЕНИ НА РЕАЛЬНЫЙ chat_id ГРУППЫ
